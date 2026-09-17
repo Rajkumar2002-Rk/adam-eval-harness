@@ -207,7 +207,11 @@ variables:
     gate:
       required: true
       controlled_terms: ["Y", ""]
-      cardinality: "exactly one Y per USUBJID among subjects with any TRTEMFL=Y"
+      cardinality:
+        flag_value: "Y"
+        per: [USUBJID]
+        within: {variable: TRTEMFL, equals: "Y"}
+        count: 1
       compare: exact
       expected_counts: {Y: 217, "": 974}
       provenance: [ADAE.ASEVN, ADAE.ASTDT, ADAE.AESEQ, ADAE.TRTEMFL]
