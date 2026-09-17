@@ -100,3 +100,22 @@ def test_repair_feedback_never_leaks_ground_truth():
     feedback = runner.redact_for_repair(found, {"STRUCTURAL"})
     blob = repr(feedback)
     assert "TRUTH_DIFF" not in blob and "expected" not in blob
+
+
+def test_provenance_accepts_fully_resolved_lineage():
+    """Captured from the first grid: the model traced ASTDY back to AE.AESTDTC
+    while the spec named the intermediate ADAE.ASTDT. Both are valid claims, and
+    comparing them unresolved wrongly failed six ADAE variables in every run."""
+    from adameval import gates, spec as S
+
+    sp = S.load("specs/adae.yaml")
+    declared = {v.name: v.gate["provenance"] for v in sp.variables if v.gate.get("provenance")}
+    declared["ASTDY"] = ["AE.AESTDTC", "ADSL.TRTSDT"]          # resolved to root
+    declared["AOCCIFL"] = ["AE.USUBJID", "AE.AESEV", "AE.AESTDTC",
+                           "AE.AESEQ", "ADSL.TRTSDT", "ADSL.TRTEDT"]
+    assert gates.provenance(declared, sp) == []
+
+    declared["TRTEMFL"] = ["ADAE.ASTDT"]                        # genuinely incomplete
+    found = gates.provenance(declared, sp)
+    assert [f.variable for f in found] == ["TRTEMFL"]
+    assert found[0].code == "PROVENANCE_INCOMPLETE"

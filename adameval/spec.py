@@ -119,3 +119,34 @@ def assert_no_leakage(rendered: dict[str, Any]) -> None:
                       "missing_expected", "cross_check", "cardinality", "formula"):
         if forbidden in blob:
             raise AssertionError(f"gate config leaked into prompt: {forbidden!r}")
+
+
+def resolve_roots(spec: Spec, tokens: list[str], _path: frozenset[str] = frozenset()) -> set[str]:
+    """Expand provenance tokens down to raw source columns.
+
+    A derived variable may be traced either to the intermediate ADaM variable it
+    was computed from (ADAE.ASTDT) or all the way back to the SDTM column that
+    intermediate came from (AE.AESTDTC). Both are valid traceability claims, so
+    the gate compares them at the same level: fully resolved.
+
+    Tokens naming this spec's own dataset are expanded recursively; everything
+    else - SDTM domains, and ADSL when deriving ADAE - is already a root.
+    `_path` guards against cycles along the current branch only; a variable
+    legitimately reachable by two different paths must expand both times.
+    """
+    roots: set[str] = set()
+    for tok in tokens:
+        if "." not in tok:
+            roots.add(tok)
+            continue
+        ds, col = tok.split(".", 1)
+        if ds != spec.dataset or tok in _path:
+            roots.add(tok)
+            continue
+        try:
+            inner = spec.variable(col).gate.get("provenance")
+        except KeyError:
+            roots.add(tok)
+            continue
+        roots |= resolve_roots(spec, inner, _path | {tok}) if inner else {tok}
+    return roots
