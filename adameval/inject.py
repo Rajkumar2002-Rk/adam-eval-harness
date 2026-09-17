@@ -71,6 +71,18 @@ def eosstt_screenfail(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+@_adsl("fills a blank last-dose date with the start date, inventing a 1-day exposure")
+def trtedt_single_dose_fabrication(df: pd.DataFrame) -> pd.DataFrame:
+    """Captured from a live Opus 5 run, not predicted. Two subjects have exactly
+    one EX record with a blank EXENDTC; ground truth leaves TRTEDT missing and
+    the model substituted the start date, yielding TRTDURD = 1."""
+    d = df.copy()
+    m = d.TRTEDT.isna() & d.TRTSDT.notna()
+    d.loc[m, "TRTEDT"] = d.loc[m, "TRTSDT"]
+    d.loc[m, "TRTDURD"] = 1.0
+    return d
+
+
 # ---------------------------------------------------------------- ADAE
 
 @_adae("fills every missing end date with the last dose date")

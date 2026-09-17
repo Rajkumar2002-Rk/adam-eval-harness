@@ -219,9 +219,14 @@ def provenance(declared: dict[str, list[str]], spec: Spec) -> list[Finding]:
         if not got:
             out.append(Finding("NO_PROVENANCE", "PROVENANCE", v.name,
                                "no source declared for a derived variable"))
-        elif set(got) != set(want):
-            out.append(Finding("PROVENANCE_MISMATCH", "PROVENANCE", v.name,
-                               f"declared {sorted(got)}, spec says {sorted(want)}"))
+        elif missing := set(want) - set(got):
+            # Only under-declaration breaks traceability. Declaring additional
+            # real source columns (a grouping key, say) is more honest, not less,
+            # so it is not a finding - an early run flagged three of these and
+            # the model was right each time.
+            out.append(Finding("PROVENANCE_INCOMPLETE", "PROVENANCE", v.name,
+                               f"source(s) {sorted(missing)} used by the spec but "
+                               f"not declared; model declared {sorted(got)}"))
     return out
 
 

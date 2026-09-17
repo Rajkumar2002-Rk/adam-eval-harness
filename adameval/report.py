@@ -63,7 +63,7 @@ class Run:
             "provenance": self.provenance,
             "cost_usd": round(self.usage.cost(self.model), 4),
             "attempts": [
-                {"n": a.n, "executed": a.executed,
+                {"n": a.n, "executed": a.executed, "code": a.code,
                  "findings": [f.to_dict() for f in a.findings],
                  "usage": dataclasses.asdict(a.usage)}
                 for a in self.attempts
