@@ -61,7 +61,10 @@ def run(dataset, level, repeats, max_attempts, repair_from, budget, model,
     levels = list(LEVELS) if level == "all" else [level]
     tiers = {t.strip().upper() for t in repair_from.split(",") if t.strip()}
 
-    client = _mock_client() if mock else llm.AnthropicClient(model=model)
+    try:
+        client = _mock_client() if mock else llm.AnthropicClient(model=model)
+    except llm.NoCredentials as e:
+        raise click.ClickException(str(e)) from e
     ledger = llm.Ledger(budget_usd=budget, model=model if not mock else "mock")
 
     runs: list[report.Run] = []

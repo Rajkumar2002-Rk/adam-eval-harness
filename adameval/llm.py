@@ -42,6 +42,10 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+class NoCredentials(RuntimeError):
+    pass
+
+
 @dataclass
 class Ledger:
     """Hard spend ceiling. The grid aborts rather than overrunning."""
@@ -71,6 +75,15 @@ class AnthropicClient:
     def __init__(self, model: str = MODEL, max_tokens: int = 16000):
         import anthropic
         self._c = anthropic.Anthropic()
+        # The SDK resolves credentials lazily and only fails deep inside the
+        # first request, so probe here for a usable error message.
+        if not (self._c.api_key or self._c.auth_token):
+            raise NoCredentials(
+                "No Anthropic credential found. Set ANTHROPIC_API_KEY in your "
+                "shell profile:\n"
+                "  echo 'export ANTHROPIC_API_KEY=sk-ant-...' >> ~/.zshrc\n"
+                "then start a new shell. Use --mock to run with no API key."
+            )
         self.model, self.max_tokens = model, max_tokens
 
     def complete(self, system: list[dict], messages: list[dict]) -> tuple[str, Usage]:
