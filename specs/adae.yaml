@@ -1,0 +1,247 @@
+# ADAE - Adverse Event Analysis Dataset (OCCDS structure)
+# Every derivation below was verified against pharmaverseadam ground truth.
+# See notes/verified-rules.md for the verification transcript.
+dataset: ADAE
+label: Adverse Event Analysis Dataset
+structure: One record per adverse event per subject.
+key: [USUBJID, AESEQ]
+expected_rows: 1191
+sources:
+  AE: data/sdtm/ae.xpt
+  ADSL: derived/adsl.xpt
+merge:
+  from: ADSL
+  on: [USUBJID]
+  note: >
+    All 54 ADSL variables are carried onto every AE record unchanged. Any drift
+    between an ADAE row and its subject's ADSL values is a merge defect.
+
+variables:
+
+  - name: AESEQ
+    label: Sequence Number
+    type: numeric
+    source: {dataset: AE, columns: [AESEQ]}
+    derivation:
+      L0: Copy AE.AESEQ unchanged.
+      L1: Copy from AE.
+      L2: null
+    gate:
+      required: true
+      unique_with: [USUBJID]
+      compare: exact
+      provenance: [AE.AESEQ]
+
+  - name: ASTDT
+    label: Analysis Start Date
+    type: date
+    source: {dataset: AE, columns: [AESTDTC]}
+    derivation:
+      L0: >
+        Convert AE.AESTDTC to a date, imputing missing components to the earliest
+        possible value:
+          - full date (YYYY-MM-DD): use as is
+          - year-month only (YYYY-MM): impute day = 01
+          - year only (YYYY): impute month = 01 and day = 01
+        Do NOT floor the imputed date at TRTSDT. Year-only dates in this study are
+        historical events predating the trial by years and must stay in the past.
+      L1: Analysis start date of the adverse event, derived from AESTDTC.
+      L2: null
+    gate:
+      required: true
+      missing_expected: 0
+      compare: exact
+      provenance: [AE.AESTDTC]
+      trap: >
+        26 of 1191 records have a partial date (15 year-month, 11 year-only).
+        A "max(imputed, TRTSDT)" clause is a common convention but is NOT used
+        here; applying it would wrongly make 11 historical events
+        treatment-emergent.
+
+  - name: ASTDTF
+    label: Analysis Start Date Imputation Flag
+    type: character
+    source: {dataset: AE, columns: [AESTDTC]}
+    derivation:
+      L0: >
+        "D" if the day component was imputed (AESTDTC was YYYY-MM).
+        "M" if month and day were imputed (AESTDTC was YYYY).
+        Empty string if nothing was imputed.
+      L1: Imputation flag for the analysis start date.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["", "D", "M"]
+      compare: exact
+      expected_counts: {"": 1165, D: 15, M: 11}
+      provenance: [AE.AESTDTC]
+      trap: >
+        Imputing ASTDT without setting ASTDTF produces an untraceable dataset:
+        the derived value is indistinguishable from collected data. This is the
+        core traceability failure mode.
+
+  - name: AENDT
+    label: Analysis End Date
+    type: date
+    source: {dataset: AE, columns: [AEENDTC]}
+    derivation:
+      L0: >
+        Convert AE.AEENDTC to a date. Do NOT impute. Do NOT substitute the study
+        end date, the last dose date, or ASTDT. A missing AEENDTC means the event
+        was still ongoing at the time of the data cut; leave the value missing.
+      L1: Analysis end date of the adverse event, derived from AEENDTC.
+      L2: null
+    gate:
+      required: true
+      missing_expected: 473
+      compare: exact
+      provenance: [AE.AEENDTC]
+      trap: >
+        473 of 1191 records (40%) have no end date. Filling them fabricates a
+        clinical fact. The result is fully conformant and passes CORE.
+
+  - name: AENDTF
+    label: Analysis End Date Imputation Flag
+    type: character
+    source: {dataset: AE, columns: [AEENDTC]}
+    derivation:
+      L0: Empty string for all records - no end date imputation is performed in
+          this study.
+      L1: Imputation flag for the analysis end date.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: [""]
+      compare: exact
+      expected_counts: {"": 1191}
+      provenance: [AE.AEENDTC]
+
+  - name: ASTDY
+    label: Analysis Start Relative Day
+    type: numeric
+    source: {dataset: ADAE, columns: [ASTDT, TRTSDT]}
+    derivation:
+      L0: >
+        If ASTDT >= TRTSDT: (ASTDT - TRTSDT).days + 1.
+        If ASTDT <  TRTSDT: (ASTDT - TRTSDT).days.
+        There is no Day 0. The day before first dose is Day -1; the day of first
+        dose is Day 1.
+      L1: Study day of the adverse event start, relative to first dose.
+      L2: null
+    gate:
+      required: true
+      forbidden_values: [0]
+      compare: exact
+      provenance: [ADAE.ASTDT, ADSL.TRTSDT]
+      trap: >
+        A plain subtraction is off by one on every on-or-after-treatment record
+        and introduces a Day 0 that cannot exist.
+
+  - name: AENDY
+    label: Analysis End Relative Day
+    type: numeric
+    source: {dataset: ADAE, columns: [AENDT, TRTSDT]}
+    derivation:
+      L0: Same rule as ASTDY, applied to AENDT. Missing where AENDT is missing.
+      L1: Study day of the adverse event end, relative to first dose.
+      L2: null
+    gate:
+      required: true
+      forbidden_values: [0]
+      missing_expected: 473
+      compare: exact
+      provenance: [ADAE.AENDT, ADSL.TRTSDT]
+
+  - name: ADURN
+    label: Analysis Duration (N)
+    type: numeric
+    source: {dataset: ADAE, columns: [ASTDT, AENDT]}
+    derivation:
+      L0: (AENDT - ASTDT).days + 1. Missing where AENDT is missing.
+      L1: Duration of the adverse event.
+      L2: null
+    gate:
+      required: true
+      missing_expected: 473
+      compare: exact
+      provenance: [ADAE.ASTDT, ADAE.AENDT]
+      trap: >
+        Depends on AENDT. If a model fabricates end dates, ADURN becomes
+        fabricated too - error compounding across derived variables.
+
+  - name: TRTEMFL
+    label: Treatment Emergent Analysis Flag
+    type: character
+    source: {dataset: ADAE, columns: [ASTDT, TRTSDT, TRTEDT]}
+    derivation:
+      L0: >
+        "Y" if ASTDT >= TRTSDT AND ASTDT <= TRTEDT + 30 days.
+        Empty string otherwise. Note: blank, NOT "N".
+      L1: Treatment emergent analysis flag.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["Y", ""]
+      compare: exact
+      expected_counts: {Y: 1122, "": 69}
+      provenance: [ADAE.ASTDT, ADSL.TRTSDT, ADSL.TRTEDT]
+      trap: >
+        Two traps. (1) The flag is Y/blank, not Y/N. (2) There IS an upper bound
+        - events starting well after last dose are not treatment-emergent. The
+        ground truth constrains the follow-up window only to somewhere in
+        [8, 36] days; 30 is the conventional choice and reproduces it exactly.
+        The window cannot be inferred from the data alone - only from the spec.
+
+  - name: AOCCIFL
+    label: 1st Max Severity Occurrence Flag
+    type: character
+    source: {dataset: ADAE, columns: [USUBJID, ASEVN, ASTDT, AESEQ, TRTEMFL]}
+    derivation:
+      L0: >
+        Within treatment-emergent records only (TRTEMFL == "Y"), for each subject
+        find the maximum ASEVN. Among that subject's records at that maximum
+        severity, flag the earliest one by ASTDT, breaking ties on AESEQ, with
+        "Y". All other records get an empty string.
+      L1: Flags each subject's first most-severe treatment-emergent event.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["Y", ""]
+      cardinality: "exactly one Y per USUBJID among subjects with any TRTEMFL=Y"
+      compare: exact
+      expected_counts: {Y: 217, "": 974}
+      provenance: [ADAE.ASEVN, ADAE.ASTDT, ADAE.AESEQ, ADAE.TRTEMFL]
+      trap: >
+        The variable name suggests "first occurrence"; it is actually "first
+        occurrence of maximum severity", restricted to treatment-emergent
+        records. A model that flags the chronologically first event produces
+        correct subject counts and the wrong rows - invisible in a summary table.
+
+  - name: ASEV
+    label: Analysis Severity/Intensity
+    type: character
+    source: {dataset: AE, columns: [AESEV]}
+    derivation:
+      L0: Copy AE.AESEV unchanged.
+      L1: Analysis severity of the adverse event.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: [MILD, MODERATE, SEVERE]
+      compare: exact
+      provenance: [AE.AESEV]
+
+  - name: ASEVN
+    label: Analysis Severity/Intensity (N)
+    type: numeric
+    source: {dataset: ADAE, columns: [ASEV]}
+    derivation:
+      L0: 'MILD -> 1, MODERATE -> 2, SEVERE -> 3.'
+      L1: Numeric representation of ASEV.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: [1, 2, 3]
+      paired_with: {variable: ASEV, mapping: {MILD: 1, MODERATE: 2, SEVERE: 3}}
+      compare: exact
+      provenance: [ADAE.ASEV]

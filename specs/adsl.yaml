@@ -1,0 +1,192 @@
+# ADSL - Subject-Level Analysis Dataset
+# Every derivation below was verified against pharmaverseadam ground truth.
+# See notes/verified-rules.md for the verification transcript.
+dataset: ADSL
+label: Subject-Level Analysis Dataset
+structure: One record per subject.
+key: [USUBJID]
+expected_rows: 306
+sources:
+  DM: data/sdtm/dm.xpt
+  EX: data/sdtm/ex.xpt
+  DS: data/sdtm/ds.xpt
+
+variables:
+
+  - name: USUBJID
+    label: Unique Subject Identifier
+    type: character
+    source: {dataset: DM, columns: [USUBJID]}
+    derivation:
+      L0: Copy DM.USUBJID unchanged.
+      L1: Copy from DM.
+      L2: null
+    gate:
+      required: true
+      unique: true
+      compare: exact
+      provenance: [DM.USUBJID]
+
+  - name: TRT01P
+    label: Planned Treatment for Period 01
+    type: character
+    source: {dataset: DM, columns: [ARM]}
+    derivation:
+      L0: Copy DM.ARM unchanged. This is the PLANNED arm - what the subject was
+          randomized to. Do not substitute ACTARM.
+      L1: Planned treatment for period 1, taken from DM.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: [Placebo, Xanomeline High Dose, Xanomeline Low Dose, Screen Failure]
+      compare: exact
+      provenance: [DM.ARM]
+      trap: >
+        12 of 306 subjects have ARM != ACTARM. Deriving both TRT01P and TRT01A
+        from the same source yields a fully conformant, silently wrong dataset.
+
+  - name: TRT01A
+    label: Actual Treatment for Period 01
+    type: character
+    source: {dataset: DM, columns: [ACTARM]}
+    derivation:
+      L0: Copy DM.ACTARM unchanged. This is the ACTUAL arm - what the subject
+          really received, which may differ from the planned arm.
+      L1: Actual treatment for period 1, taken from DM.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: [Placebo, Xanomeline High Dose, Xanomeline Low Dose, Screen Failure]
+      compare: exact
+      provenance: [DM.ACTARM]
+      cross_check: "TRT01P != TRT01A for exactly 12 subjects"
+
+  - name: TRTSDT
+    label: Date of First Exposure to Treatment
+    type: date
+    source: {dataset: EX, columns: [USUBJID, EXSTDTC, EXDOSE, EXTRT]}
+    derivation:
+      L0: >
+        Earliest EX.EXSTDTC per subject, across ALL dosing records, converted to
+        a date. Do NOT filter on EXDOSE > 0: placebo records carry EXDOSE = 0 and
+        are still valid exposure. Subjects with no EX records (screen failures)
+        get a missing value.
+      L1: Date of first exposure to study treatment, derived from EX.
+      L2: null
+    gate:
+      required: true
+      missing_expected: 52
+      compare: exact
+      provenance: [EX.EXSTDTC]
+      trap: >
+        EXDOSE is 0 for all PLACEBO records. The common admiral idiom filters
+        EXDOSE > 0, which silently drops all 86 placebo subjects and cascades
+        into SAFFL, TRTDURD, ASTDY and TRTEMFL.
+
+  - name: TRTEDT
+    label: Date of Last Exposure to Treatment
+    type: date
+    source: {dataset: EX, columns: [USUBJID, EXENDTC, EXDOSE, EXTRT]}
+    derivation:
+      L0: >
+        Latest EX.EXENDTC per subject, across ALL dosing records, converted to a
+        date. Same placebo caveat as TRTSDT.
+      L1: Date of last exposure to study treatment, derived from EX.
+      L2: null
+    gate:
+      required: true
+      missing_expected: 54
+      compare: exact
+      provenance: [EX.EXENDTC]
+
+  - name: TRTDURD
+    label: Total Treatment Duration (Days)
+    type: numeric
+    source: {dataset: ADSL, columns: [TRTSDT, TRTEDT]}
+    derivation:
+      L0: TRTEDT - TRTSDT + 1. Inclusive of both the first and last dosing day.
+      L1: Total treatment duration in days.
+      L2: null
+    gate:
+      required: true
+      compare: exact
+      formula: (TRTEDT - TRTSDT).days + 1
+      provenance: [ADSL.TRTSDT, ADSL.TRTEDT]
+      trap: "Omitting the +1 understates every duration by one day."
+
+  - name: SAFFL
+    label: Safety Population Flag
+    type: character
+    source: {dataset: ADSL, columns: [TRTSDT]}
+    derivation:
+      L0: >
+        "Y" if the subject has a non-missing TRTSDT (i.e. received at least one
+        dose), otherwise "N". Note this flag uses "N", not blank.
+      L1: Safety population flag.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["Y", "N"]
+      compare: exact
+      expected_counts: {Y: 254, N: 52}
+      provenance: [ADSL.TRTSDT]
+
+  - name: AGEGR1
+    label: Pooled Age Group 1
+    type: character
+    source: {dataset: DM, columns: [AGE]}
+    derivation:
+      L0: '"18-64" if AGE <= 64, ">64" if AGE >= 65. Two groups only.'
+      L1: Pooled age group, derived from AGE.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["18-64", ">64"]
+      compare: exact
+      expected_counts: {"18-64": 42, ">64": 264}
+      provenance: [DM.AGE]
+      trap: >
+        Study-specific cut point. The widely published CDISC pilot ADSL uses
+        three groups (<65 / 65-80 / >80); this study uses two. A model relying
+        on prior knowledge of ADSL will produce the wrong categories.
+
+  - name: RACEGR1
+    label: Pooled Race Group 1
+    type: character
+    source: {dataset: DM, columns: [RACE]}
+    derivation:
+      L0: '"White" if RACE == "WHITE", otherwise "Non-white".'
+      L1: Pooled race group, derived from RACE.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["White", "Non-white"]
+      compare: exact
+      expected_counts: {White: 273, Non-white: 33}
+      provenance: [DM.RACE]
+      trap: >
+        Note the casing: source RACE values are uppercase ("WHITE"), the pooled
+        values are title case ("White"). Pooling scheme is unguessable from the
+        variable name alone.
+
+  - name: EOSSTT
+    label: End of Study Status
+    type: character
+    source: {dataset: DS, columns: [USUBJID, DSCAT, DSDECOD]}
+    derivation:
+      L0: >
+        From DS records where DSCAT == "DISPOSITION EVENT".
+        DSDECOD == "COMPLETED" -> "COMPLETED".
+        DSDECOD == "SCREEN FAILURE" -> missing (empty string).
+        Any other DSDECOD -> "DISCONTINUED".
+      L1: End of study status, derived from DS disposition records.
+      L2: null
+    gate:
+      required: true
+      controlled_terms: ["COMPLETED", "DISCONTINUED", ""]
+      compare: exact
+      expected_counts: {DISCONTINUED: 144, COMPLETED: 110, "": 52}
+      provenance: [DS.DSCAT, DS.DSDECOD]
+      trap: >
+        DS contains three DSCAT values; only DISPOSITION EVENT is relevant.
+        SCREEN FAILURE maps to missing, not to DISCONTINUED.
