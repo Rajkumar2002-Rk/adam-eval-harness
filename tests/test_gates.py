@@ -70,3 +70,33 @@ def test_provenance_gate_flags_undeclared_derivation(loaded):
     found = gates.provenance({}, spec)
     assert {f.variable for f in found} >= {"AGEGR1", "TRTDURD", "SAFFL"}
     assert all(f.code == "NO_PROVENANCE" for f in found)
+
+
+def test_mock_run_reaches_clean_score(tmp_path):
+    """The harness must be satisfiable: a correct derivation scores 1.0.
+    Without this, a low score in a real run is uninterpretable."""
+    from pathlib import Path
+
+    from adameval import llm
+    from adameval.harness import run_once
+
+    bodies = [f"```python\n{p.read_text()}```"
+              for p in sorted(Path("tests/fixtures").glob("*_adsl_*.py"))]
+    run = run_once(llm.MockClient(bodies), llm.Ledger(budget_usd=1.0),
+                   "ADSL", "L1", max_attempts=4)
+    assert run.score == 1.0
+    assert len(run.attempts) == 2, "expected one repair round"
+    assert run.attempts[0].findings and not run.attempts[-1].findings
+
+
+def test_repair_feedback_never_leaks_ground_truth():
+    """Integrity control: TRUTH findings carry expected values. If those reach
+    the model, repair success measures nothing."""
+    from adameval import gates, inject, io, runner, spec as S
+
+    spec, truth = S.load("specs/ADSL".replace("ADSL", "adsl") + ".yaml"), io.read("data/adam/adsl.xpt")
+    found = gates.run_all(inject.apply("ADSL", "actarm_confusion", truth), truth, spec)
+    assert any(f.layer == "TRUTH" for f in found)
+    feedback = runner.redact_for_repair(found, {"STRUCTURAL"})
+    blob = repr(feedback)
+    assert "TRUTH_DIFF" not in blob and "expected" not in blob
