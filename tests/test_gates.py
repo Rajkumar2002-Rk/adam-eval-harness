@@ -119,3 +119,19 @@ def test_provenance_accepts_fully_resolved_lineage():
     found = gates.provenance(declared, sp)
     assert [f.variable for f in found] == ["TRTEMFL"]
     assert found[0].code == "PROVENANCE_INCOMPLETE"
+
+
+def test_provenance_feedback_is_actionable_but_redacted():
+    """Captured from the repair arm: a run whose only defects were provenance
+    got no feedback and halted after one attempt. Provenance must be repairable
+    - but its message names the spec's source columns, which at L1/L2 would leak
+    derivation detail the ablation withholds. So it is sent, with columns cut."""
+    from adameval import findings, runner
+
+    f = findings.Finding("PROVENANCE_INCOMPLETE", "PROVENANCE", "TRTEMFL",
+                         "source(s) ['ADSL.TRTEDT', 'ADSL.TRTSDT'] used by the spec "
+                         "but not declared; model declared ['AE.AESTDTC']")
+    out = runner.redact_for_repair([f], {"STRUCTURAL"})
+    assert len(out) == 1 and out[0]["variable"] == "TRTEMFL"
+    blob = repr(out)
+    assert "TRTSDT" not in blob and "TRTEDT" not in blob

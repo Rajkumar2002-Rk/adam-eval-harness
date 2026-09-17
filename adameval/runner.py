@@ -59,6 +59,16 @@ def redact_for_repair(findings: list[Finding], allow: set[str]) -> list[dict[str
     """
     out = []
     for f in findings:
+        if f.layer == "PROVENANCE":
+            # Always actionable and always redacted. The raw message names the
+            # spec's source columns, which at L1/L2 would hand back derivation
+            # detail the ablation deliberately withheld - so say only that the
+            # declaration is incomplete, never which sources are missing.
+            out.append({"code": f.code, "variable": f.variable,
+                        "problem": "PROVENANCE is incomplete for this variable: it "
+                                   "does not list every source column the derivation "
+                                   "actually reads."})
+            continue
         if f.layer not in allow:
             continue
         item = {"code": f.code, "variable": f.variable, "problem": f.message}
