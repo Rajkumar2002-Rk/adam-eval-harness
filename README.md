@@ -199,9 +199,9 @@ Retry loops fix what your gates detect.**
 - **One model, one vendor.** Claude Opus 5, adaptive thinking, default effort.
   Nothing here says anything about any other model.
 
-### Three harness bugs, and what they mean
+### Four harness bugs, and what they mean
 
-Three times, a result that looked like a model failure was mine:
+Four times, something that looked like a result was actually my mistake:
 
 1. **Provenance required exact set equality.** The model declared *more* source
    columns than the spec listed — and was right each time. Only under-declaration
@@ -212,11 +212,20 @@ Three times, a result that looked like a model failure was mine:
    mean from 0.887 to 0.696.
 3. **Provenance defects were unrepairable.** They sat in no allow-list, so a run
    whose only defects were provenance halted after one attempt.
+4. **`runs/` was gitignored.** This README claimed to publish the raw results
+   behind every number in it, and published an empty directory instead. CI
+   caught it: the re-gate step tries to reproduce the published mean from the
+   published artifacts, and there were none to read.
 
-All three were found by asking *why* the model failed, not by a test. **A harness
-that overcounts defects is as misleading as one that undercounts**, and the only
-reason I caught the second was that ADAE scoring exactly 0.50 in all nine runs
-looked too tidy. Undetected harness bugs almost certainly remain.
+The first three were found by asking *why* the model failed, not by a test.
+**A harness that overcounts defects is as misleading as one that undercounts**,
+and the only reason I caught the second was that ADAE scoring exactly 0.50 in
+all nine runs looked too tidy. The fourth was caught by CI, which is the only
+one of the four that found itself. Undetected bugs almost certainly remain.
+
+Every attempt's generated code is published in `runs/`, so the claims above can
+be checked rather than taken on trust - including the code that produced the
+fabricated one-day exposure.
 
 Generated code is persisted per attempt, so a gate fix can be re-applied to past
 runs for free. That is why bug 2 cost nothing to correct.
