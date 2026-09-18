@@ -1,0 +1,2 @@
+[console_scripts]
+adam-eval = adameval.cli:main

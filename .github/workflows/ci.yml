@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: gate layer (no API key required)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Regression tests
+        run: python -m pytest -q
+
+      # The gate layer never calls a model, so its full validation suite runs
+      # in CI with no credentials and no cost. A gate that stops catching a
+      # defect we deliberately planted fails the build.
+      - name: Validate gates against 12 synthetic defects
+        run: python -m adameval.cli selftest
+
+      - name: End-to-end run against canned responses
+        run: |
+          python -m adameval.cli run --mock \
+            --dataset ADSL --level L1 --repeats 1 \
+            --fail-under 1.0 --out /tmp/ci.json
+
+      - name: Re-gate the published results
+        run: |
+          python - <<'PY'
+          from adameval.regate import regate
+          runs = regate("runs/grid.json")
+          mean = sum(r["score"] for r in runs) / len(runs)
+          print(f"{len(runs)} runs re-gated, mean score {mean:.3f}")
+          assert abs(mean - 0.887) < 0.01, f"published mean moved: {mean:.3f}"
+          PY

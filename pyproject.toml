@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adam-eval-harness"
+version = "0.1.0"
+description = "Eval harness and deterministic regression gate for LLM-generated SDTM to ADaM derivations"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Rajkumar N" }]
+keywords = ["cdisc", "sdtm", "adam", "clinical-trials", "llm-evaluation", "regression-gate"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "pandas>=2.0",
+  "pyreadstat>=1.2",
+  "PyYAML>=6.0",
+  "click>=8.1",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=1.0"]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/Rajkumar2002-Rk/adam-eval-harness"
+Issues = "https://github.com/Rajkumar2002-Rk/adam-eval-harness/issues"
+
+[project.scripts]
+adam-eval = "adameval.cli:main"
+
+[tool.setuptools]
+packages = ["adameval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
