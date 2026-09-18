@@ -1,0 +1,1972 @@
+[
+  {
+    "dataset": "ADSL",
+    "level": "L1",
+    "repeat": 0,
+    "model": "claude-opus-5",
+    "score": 1.0,
+    "n_attempts": 2,
+    "target_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "clean_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "provenance": {
+      "USUBJID": [
+        "DM.USUBJID"
+      ],
+      "TRT01P": [
+        "DM.ARM"
+      ],
+      "TRT01A": [
+        "DM.ACTARM"
+      ],
+      "TRTSDT": [
+        "EX.USUBJID",
+        "EX.EXSTDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTEDT": [
+        "EX.USUBJID",
+        "EX.EXENDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "SAFFL": [
+        "ADSL.TRTSDT"
+      ],
+      "AGEGR1": [
+        "DM.AGE"
+      ],
+      "RACEGR1": [
+        "DM.RACE"
+      ],
+      "EOSSTT": [
+        "DS.USUBJID",
+        "DS.DSCAT",
+        "DS.DSDECOD"
+      ]
+    },
+    "cost_usd": 0.3437,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "code": "\"\"\"\nDerive ADSL (Subject-Level Analysis Dataset) from SDTM DM, EX and DS.\n\nOne record per subject (key: USUBJID).\n\"\"\"\n\nimport pandas as pd\nimport numpy as np\nimport datetime\n\n\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\"],\n}\n\n\ndef _to_date(value):\n    \"\"\"Convert an ISO 8601 character date/time to a datetime.date.\n\n    # ASSUMPTION: Only complete (at least YYYY-MM-DD) ISO dates are used; partial\n    # dates (YYYY or YYYY-MM) are treated as missing since the specification\n    # requests no imputation flags.\n    \"\"\"\n    if value is None:\n        return pd.NA\n    if isinstance(value, float) and np.isnan(value):\n        return pd.NA\n    s = str(value).strip()\n    if len(s) < 10:\n        return pd.NA\n    s = s[:10]\n    try:\n        ts = pd.to_datetime(s, format=\"%Y-%m-%d\", errors=\"coerce\")\n    except Exception:\n        return pd.NA\n    if pd.isna(ts):\n        return pd.NA\n    return ts.date()\n\n\ndef _clean_str(value):\n    \"\"\"Return a stripped Python string, or pd.NA when the value is missing/blank.\"\"\"\n    if value is None:\n        return pd.NA\n    if isinstance(value, float) and np.isnan(value):\n        return pd.NA\n    s = str(value).strip()\n    if s == \"\" or s.lower() == \"nan\":\n        return pd.NA\n    return s\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy()\n    ds = sources[\"DS\"].copy()\n\n    # ------------------------------------------------------------------\n    # Base: one record per subject from DM\n    # ------------------------------------------------------------------\n    adsl = pd.DataFrame(\n        {\n            \"USUBJID\": dm[\"USUBJID\"].map(_clean_str),\n            \"TRT01P\": dm[\"ARM\"].map(_clean_str),\n            \"TRT01A\": dm[\"ACTARM\"].map(_clean_str),\n        }\n    )\n    # ASSUMPTION: DM is already one record per subject; de-duplicate defensively.\n    adsl = adsl.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    # ------------------------------------------------------------------\n    # Treatment start / end dates from EX\n    # ASSUMPTION: A valid treatment administration is a record with a positive\n    # dose, or a zero dose of placebo (the placebo arm is dosed at 0 mg in this\n    # study).  Records without a usable date are ignored.\n    # ------------------------------------------------------------------\n    exd = ex.copy()\n    exd[\"_USUBJID\"] = exd[\"USUBJID\"].map(_clean_str)\n    exd[\"_EXTRT\"] = exd[\"EXTRT\"].map(lambda v: (_clean_str(v) or \"\") if _clean_str(v) is not pd.NA else \"\")\n    exd[\"_EXDOSE\"] = pd.to_numeric(exd[\"EXDOSE\"], errors=\"coerce\")\n    exd[\"_STDT\"] = exd[\"EXSTDTC\"].map(_to_date)\n    exd[\"_ENDT\"] = exd[\"EXENDTC\"].map(_to_date)\n\n    is_placebo = exd[\"_EXTRT\"].str.upper().str.contains(\"PLACEBO\", na=False)\n    valid_dose = (exd[\"_EXDOSE\"] > 0) | ((exd[\"_EXDOSE\"] == 0) & is_placebo)\n    exv = exd[valid_dose].copy()\n\n    # First dosing date\n    st = exv[exv[\"_STDT\"].notna()]\n    trtsdt_map = st.groupby(\"_USUBJID\")[\"_STDT\"].min().to_dict()\n\n    # Last dosing date: use EXENDTC, falling back to EXSTDTC when the end date\n    # is missing (a single-day administration record).\n    exv[\"_LASTDT\"] = exv[\"_ENDT\"]\n    exv.loc[exv[\"_LASTDT\"].isna(), \"_LASTDT\"] = exv.loc[exv[\"_LASTDT\"].isna(), \"_STDT\"]\n    en = exv[exv[\"_LASTDT\"].notna()]\n    trtedt_map = en.groupby(\"_USUBJID\")[\"_LASTDT\"].max().to_dict()\n\n    adsl[\"TRTSDT\"] = adsl[\"USUBJID\"].map(lambda u: trtsdt_map.get(u, pd.NA))\n    adsl[\"TRTEDT\"] = adsl[\"USUBJID\"].map(lambda u: trtedt_map.get(u, pd.NA))\n\n    # ------------------------------------------------------------------\n    # Treatment duration (inclusive of both first and last dosing days)\n    # ------------------------------------------------------------------\n    def _durd(row):\n        s, e = row[\"TRTSDT\"], row[\"TRTEDT\"]\n        if isinstance(s, datetime.date) and isinstance(e, datetime.date):\n            return float((e - s).days + 1)\n        return np.nan\n\n    adsl[\"TRTDURD\"] = adsl.apply(_durd, axis=1).astype(\"float64\")\n\n    # ------------------------------------------------------------------\n    # Safety population flag\n    # ------------------------------------------------------------------\n    adsl[\"SAFFL\"] = adsl[\"TRTSDT\"].map(\n        lambda d: \"Y\" if isinstance(d, datetime.date) else \"N\"\n    )\n\n    # ------------------------------------------------------------------\n    # Pooled age group\n    # ASSUMPTION: Pooling is <65 vs >=65 years, labelled \"18-64\" / \">64\"\n    # (minimum enrolment age is 18); missing age gives a missing group.\n    # ------------------------------------------------------------------\n    age = pd.to_numeric(dm.set_index(dm[\"USUBJID\"].map(_clean_str))[\"AGE\"], errors=\"coerce\")\n    age = age[~age.index.duplicated(keep=\"first\")]\n\n    def _agegr1(u):\n        a = age.get(u, np.nan)\n        if pd.isna(a):\n            return pd.NA\n        return \"18-64\" if a < 65 else \">64\"\n\n    adsl[\"AGEGR1\"] = adsl[\"USUBJID\"].map(_agegr1)\n\n    # ------------------------------------------------------------------\n    # Pooled race group\n    # ASSUMPTION: Pooling is White vs Non-White.\n    # ------------------------------------------------------------------\n    race = dm.set_index(dm[\"USUBJID\"].map(_clean_str))[\"RACE\"].map(_clean_str)\n    race = race[~race.index.duplicated(keep=\"first\")]\n\n    def _racegr1(u):\n        r = race.get(u, pd.NA)\n        if r is pd.NA or (isinstance(r, float) and np.isnan(r)):\n            return pd.NA\n        return \"White\" if str(r).strip().upper() == \"WHITE\" else \"Non-White\"\n\n    adsl[\"RACEGR1\"] = adsl[\"USUBJID\"].map(_racegr1)\n\n    # ------------------------------------------------------------------\n    # End of study status from DS disposition events\n    # ASSUMPTION: The subject's disposition event is the DS record with\n    # DSCAT = \"DISPOSITION EVENT\"; if more than one exists the latest\n    # (highest DSSEQ) is used.  COMPLETED -> \"COMPLETED\",\n    # SCREEN FAILURE -> \"NOT STARTED\", any other reason -> \"DISCONTINUED\",\n    # and no disposition record -> \"ONGOING\".\n    # ------------------------------------------------------------------\n    dsd = ds.copy()\n    dsd[\"_USUBJID\"] = dsd[\"USUBJID\"].map(_clean_str)\n    dsd[\"_DSCAT\"] = dsd[\"DSCAT\"].map(lambda v: \"\" if _clean_str(v) is pd.NA else str(_clean_str(v)).upper())\n    dsd[\"_DSDECOD\"] = dsd[\"DSDECOD\"].map(lambda v: \"\" if _clean_str(v) is pd.NA else str(_clean_str(v)).upper())\n    disp = dsd[dsd[\"_DSCAT\"] == \"DISPOSITION EVENT\"].copy()\n    if \"DSSEQ\" in disp.columns:\n        disp[\"_DSSEQ\"] = pd.to_numeric(disp[\"DSSEQ\"], errors=\"coerce\")\n        disp = disp.sort_values([\"_USUBJID\", \"_DSSEQ\"], kind=\"mergesort\")\n    disp = disp.drop_duplicates(subset=[\"_USUBJID\"], keep=\"last\")\n    decod_map = dict(zip(disp[\"_USUBJID\"], disp[\"_DSDECOD\"]))\n\n    def _eosstt(u):\n        d = decod_map.get(u)\n        if d is None or d == \"\":\n            return \"ONGOING\"\n        if d == \"COMPLETED\":\n            return \"COMPLETED\"\n        if d == \"SCREEN FAILURE\":\n            return \"NOT STARTED\"\n        return \"DISCONTINUED\"\n\n    adsl[\"EOSSTT\"] = adsl[\"USUBJID\"].map(_eosstt)\n\n    # ------------------------------------------------------------------\n    # Final layout / typing\n    # ------------------------------------------------------------------\n    out_cols = [\n        \"USUBJID\",\n        \"TRT01P\",\n        \"TRT01A\",\n        \"TRTSDT\",\n        \"TRTEDT\",\n        \"TRTDURD\",\n        \"SAFFL\",\n        \"AGEGR1\",\n        \"RACEGR1\",\n        \"EOSSTT\",\n    ]\n    adsl = adsl[out_cols].copy()\n\n    for c in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        adsl[c] = adsl[c].map(lambda v: v if (v is pd.NA or v is None or isinstance(v, float)) else str(v))\n        adsl[c] = adsl[c].astype(object)\n\n    for c in [\"TRTSDT\", \"TRTEDT\"]:\n        adsl[c] = adsl[c].map(lambda v: v if isinstance(v, datetime.date) else pd.NA).astype(object)\n\n    adsl = adsl.sort_values(\"USUBJID\", kind=\"mergesort\").reset_index(drop=True)\n    return adsl",
+        "findings": [
+          {
+            "code": "MISSING_COUNT",
+            "layer": "CALIBRATED",
+            "variable": "TRTEDT",
+            "message": "expected 54 missing values, got 52",
+            "n_rows": 2,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "CT_VIOLATION",
+            "layer": "STRUCTURAL",
+            "variable": "RACEGR1",
+            "message": "values outside controlled terminology: [\"'Non-White'\"]",
+            "n_rows": 33,
+            "examples": [
+              "Non-White"
+            ],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "RACEGR1",
+            "message": "value distribution differs: expected {'White': 273, 'Non-white': 33}, got {'White': 273, 'Non-White': 33}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "CT_VIOLATION",
+            "layer": "STRUCTURAL",
+            "variable": "EOSSTT",
+            "message": "values outside controlled terminology: [\"'NOT STARTED'\"]",
+            "n_rows": 52,
+            "examples": [
+              "NOT STARTED"
+            ],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "EOSSTT",
+            "message": "value distribution differs: expected {'DISCONTINUED': 144, 'COMPLETED': 110, '': 52}, got {'DISCONTINUED': 144, 'COMPLETED': 110, 'NOT STARTED': 52}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEDT",
+            "message": "6 of 306 values differ from ground truth",
+            "n_rows": 6,
+            "examples": [
+              {
+                "key": "01-704-1233",
+                "expected": "2013-04-04",
+                "got": "2013-04-05"
+              },
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "2013-07-05"
+              },
+              {
+                "key": "01-705-1031",
+                "expected": "2013-12-18",
+                "got": "2013-12-19"
+              },
+              {
+                "key": "01-705-1303",
+                "expected": "2013-12-30",
+                "got": "2013-12-31"
+              },
+              {
+                "key": "01-705-1377",
+                "expected": "2014-01-25",
+                "got": "2014-01-26"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTDURD",
+            "message": "6 of 306 values differ from ground truth",
+            "n_rows": 6,
+            "examples": [
+              {
+                "key": "01-704-1233",
+                "expected": "15.0",
+                "got": "16.0"
+              },
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "1.0"
+              },
+              {
+                "key": "01-705-1031",
+                "expected": "22.0",
+                "got": "23.0"
+              },
+              {
+                "key": "01-705-1303",
+                "expected": "15.0",
+                "got": "16.0"
+              },
+              {
+                "key": "01-705-1377",
+                "expected": "22.0",
+                "got": "23.0"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "RACEGR1",
+            "message": "33 of 306 values differ from ground truth",
+            "n_rows": 33,
+            "examples": [
+              {
+                "key": "01-701-1176",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1203",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1275",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1363",
+                "expected": "Non-white",
+                "got": "Non-White"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "NOT STARTED"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 959,
+          "output_tokens": 5329,
+          "cache_read": 0,
+          "cache_write": 7037
+        }
+      },
+      {
+        "n": 2,
+        "executed": true,
+        "code": "\"\"\"\nDerive ADSL (Subject-Level Analysis Dataset) from SDTM DM, EX and DS.\n\nOne record per subject (key: USUBJID).\n\"\"\"\n\nimport pandas as pd\nimport numpy as np\nimport datetime\n\n\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\"],\n}\n\n\ndef _to_date(value):\n    \"\"\"Convert an ISO 8601 character date/time to a datetime.date.\n\n    # ASSUMPTION: Only complete (at least YYYY-MM-DD) ISO dates are used; partial\n    # dates (YYYY or YYYY-MM) are treated as missing since the specification\n    # requests no imputation flags.\n    \"\"\"\n    if value is None:\n        return pd.NA\n    if isinstance(value, float) and np.isnan(value):\n        return pd.NA\n    s = str(value).strip()\n    if len(s) < 10:\n        return pd.NA\n    s = s[:10]\n    ts = pd.to_datetime(s, format=\"%Y-%m-%d\", errors=\"coerce\")\n    if pd.isna(ts):\n        return pd.NA\n    return ts.date()\n\n\ndef _clean_str(value):\n    \"\"\"Return a stripped Python string, or pd.NA when the value is missing/blank.\"\"\"\n    if value is None:\n        return pd.NA\n    if isinstance(value, float) and np.isnan(value):\n        return pd.NA\n    s = str(value).strip()\n    if s == \"\" or s.lower() == \"nan\":\n        return pd.NA\n    return s\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy()\n    ds = sources[\"DS\"].copy()\n\n    # ------------------------------------------------------------------\n    # Base: one record per subject from DM\n    # ------------------------------------------------------------------\n    adsl = pd.DataFrame(\n        {\n            \"USUBJID\": dm[\"USUBJID\"].map(_clean_str),\n            \"TRT01P\": dm[\"ARM\"].map(_clean_str),\n            \"TRT01A\": dm[\"ACTARM\"].map(_clean_str),\n        }\n    )\n    # ASSUMPTION: DM is already one record per subject; de-duplicate defensively.\n    adsl = adsl.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    # ------------------------------------------------------------------\n    # Treatment start / end dates from EX\n    # ASSUMPTION: Every EX record represents a study treatment administration\n    # (the placebo arm is administered at a dose of 0 mg), so all EX records\n    # with a usable date contribute.  TRTSDT is the earliest non-missing\n    # EXSTDTC and TRTEDT is the latest non-missing EXENDTC; no imputation is\n    # performed for missing exposure end dates.\n    # ------------------------------------------------------------------\n    exd = ex.copy()\n    exd[\"_USUBJID\"] = exd[\"USUBJID\"].map(_clean_str)\n    exd[\"_STDT\"] = exd[\"EXSTDTC\"].map(_to_date)\n    exd[\"_ENDT\"] = exd[\"EXENDTC\"].map(_to_date)\n\n    st = exd[exd[\"_STDT\"].notna()]\n    trtsdt_map = st.groupby(\"_USUBJID\")[\"_STDT\"].min().to_dict()\n\n    en = exd[exd[\"_ENDT\"].notna()]\n    trtedt_map = en.groupby(\"_USUBJID\")[\"_ENDT\"].max().to_dict()\n\n    adsl[\"TRTSDT\"] = adsl[\"USUBJID\"].map(lambda u: trtsdt_map.get(u, pd.NA))\n    adsl[\"TRTEDT\"] = adsl[\"USUBJID\"].map(lambda u: trtedt_map.get(u, pd.NA))\n\n    # ------------------------------------------------------------------\n    # Treatment duration (inclusive of both first and last dosing days)\n    # ------------------------------------------------------------------\n    def _durd(row):\n        s, e = row[\"TRTSDT\"], row[\"TRTEDT\"]\n        if isinstance(s, datetime.date) and isinstance(e, datetime.date):\n            return float((e - s).days + 1)\n        return np.nan\n\n    adsl[\"TRTDURD\"] = adsl.apply(_durd, axis=1).astype(\"float64\")\n\n    # ------------------------------------------------------------------\n    # Safety population flag\n    # ------------------------------------------------------------------\n    adsl[\"SAFFL\"] = adsl[\"TRTSDT\"].map(\n        lambda d: \"Y\" if isinstance(d, datetime.date) else \"N\"\n    )\n\n    # ------------------------------------------------------------------\n    # Pooled age group\n    # ASSUMPTION: Pooling is <65 vs >=65 years, labelled \"18-64\" / \">64\"\n    # (minimum enrolment age is 18); missing age gives a missing group.\n    # ------------------------------------------------------------------\n    age = pd.to_numeric(dm.set_index(dm[\"USUBJID\"].map(_clean_str))[\"AGE\"], errors=\"coerce\")\n    age = age[~age.index.duplicated(keep=\"first\")]\n\n    def _agegr1(u):\n        a = age.get(u, np.nan)\n        if pd.isna(a):\n            return pd.NA\n        return \"18-64\" if a < 65 else \">64\"\n\n    adsl[\"AGEGR1\"] = adsl[\"USUBJID\"].map(_agegr1)\n\n    # ------------------------------------------------------------------\n    # Pooled race group\n    # ASSUMPTION: Pooling is \"White\" vs \"Non-white\".\n    # ------------------------------------------------------------------\n    race = dm.set_index(dm[\"USUBJID\"].map(_clean_str))[\"RACE\"].map(_clean_str)\n    race = race[~race.index.duplicated(keep=\"first\")]\n\n    def _racegr1(u):\n        r = race.get(u, pd.NA)\n        if r is pd.NA or r is None or (isinstance(r, float) and np.isnan(r)):\n            return pd.NA\n        return \"White\" if str(r).strip().upper() == \"WHITE\" else \"Non-white\"\n\n    adsl[\"RACEGR1\"] = adsl[\"USUBJID\"].map(_racegr1)\n\n    # ------------------------------------------------------------------\n    # End of study status from DS disposition events\n    # ASSUMPTION: The subject's disposition event is the DS record with\n    # DSCAT = \"DISPOSITION EVENT\"; if more than one exists the latest\n    # (highest DSSEQ) is used.  DSDECOD = \"COMPLETED\" -> \"COMPLETED\";\n    # any other disposition reason -> \"DISCONTINUED\"; subjects who never\n    # entered the study (screen failures) or have no disposition record\n    # have EOSSTT left blank.\n    # ------------------------------------------------------------------\n    dsd = ds.copy()\n    dsd[\"_USUBJID\"] = dsd[\"USUBJID\"].map(_clean_str)\n    dsd[\"_DSCAT\"] = dsd[\"DSCAT\"].map(\n        lambda v: \"\" if _clean_str(v) is pd.NA else str(_clean_str(v)).upper()\n    )\n    dsd[\"_DSDECOD\"] = dsd[\"DSDECOD\"].map(\n        lambda v: \"\" if _clean_str(v) is pd.NA else str(_clean_str(v)).upper()\n    )\n    disp = dsd[dsd[\"_DSCAT\"] == \"DISPOSITION EVENT\"].copy()\n    if \"DSSEQ\" in disp.columns:\n        disp[\"_DSSEQ\"] = pd.to_numeric(disp[\"DSSEQ\"], errors=\"coerce\")\n        disp = disp.sort_values([\"_USUBJID\", \"_DSSEQ\"], kind=\"mergesort\")\n    disp = disp.drop_duplicates(subset=[\"_USUBJID\"], keep=\"last\")\n    decod_map = dict(zip(disp[\"_USUBJID\"], disp[\"_DSDECOD\"]))\n\n    def _eosstt(u):\n        d = decod_map.get(u)\n        if d is None or d == \"\":\n            return \"\"\n        if d == \"COMPLETED\":\n            return \"COMPLETED\"\n        if d == \"SCREEN FAILURE\":\n            return \"\"\n        return \"DISCONTINUED\"\n\n    adsl[\"EOSSTT\"] = adsl[\"USUBJID\"].map(_eosstt)\n\n    # ------------------------------------------------------------------\n    # Final layout / typing\n    # ------------------------------------------------------------------\n    out_cols = [\n        \"USUBJID\",\n        \"TRT01P\",\n        \"TRT01A\",\n        \"TRTSDT\",\n        \"TRTEDT\",\n        \"TRTDURD\",\n        \"SAFFL\",\n        \"AGEGR1\",\n        \"RACEGR1\",\n        \"EOSSTT\",\n    ]\n    adsl = adsl[out_cols].copy()\n\n    for c in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        adsl[c] = adsl[c].map(\n            lambda v: v if (v is pd.NA or v is None or isinstance(v, float)) else str(v)\n        )\n        adsl[c] = adsl[c].astype(object)\n\n    for c in [\"TRTSDT\", \"TRTEDT\"]:\n        adsl[c] = adsl[c].map(lambda v: v if isinstance(v, datetime.date) else pd.NA).astype(object)\n\n    adsl = adsl.sort_values(\"USUBJID\", kind=\"mergesort\").reset_index(drop=True)\n    return adsl",
+        "findings": [],
+        "usage": {
+          "input_tokens": 5313,
+          "output_tokens": 5264,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  },
+  {
+    "dataset": "ADSL",
+    "level": "L1",
+    "repeat": 1,
+    "model": "claude-opus-5",
+    "score": 1.0,
+    "n_attempts": 4,
+    "target_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "clean_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "provenance": {
+      "USUBJID": [
+        "DM.USUBJID"
+      ],
+      "TRT01P": [
+        "DM.ARM"
+      ],
+      "TRT01A": [
+        "DM.ACTARM"
+      ],
+      "TRTSDT": [
+        "EX.USUBJID",
+        "EX.EXSTDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTEDT": [
+        "EX.USUBJID",
+        "EX.EXENDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "SAFFL": [
+        "ADSL.TRTSDT"
+      ],
+      "AGEGR1": [
+        "DM.AGE"
+      ],
+      "RACEGR1": [
+        "DM.RACE"
+      ],
+      "EOSSTT": [
+        "DS.USUBJID",
+        "DS.DSCAT",
+        "DS.DSDECOD"
+      ]
+    },
+    "cost_usd": 0.5984,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "code": "\"\"\"\nADSL - Subject-Level Analysis Dataset\nOne record per subject (key: USUBJID), derived from SDTM DM, EX and DS.\n\"\"\"\n\nimport datetime\nimport numpy as np\nimport pandas as pd\n\n# Provenance: every produced variable -> contributing source columns\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\"],\n}\n\n\ndef _to_date(value):\n    \"\"\"Parse an ISO-8601 SDTM date/datetime string into a datetime.date.\n\n    # ASSUMPTION: partial dates (less than a full YYYY-MM-DD) are not imputed and\n    # yield a missing analysis date, which is the conservative choice here since\n    # the specification defines no imputation rules.\n    \"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = str(value).strip()\n    if len(s) < 10:\n        return None\n    try:\n        return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))\n    except (ValueError, TypeError):\n        return None\n\n\ndef _str_or_none(value):\n    \"\"\"Return a clean Python string, or None when missing.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    s = str(value).strip()\n    return s if s != \"\" else None\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy()\n    ds = sources[\"DS\"].copy()\n\n    # ------------------------------------------------------------------\n    # Base: one record per subject from DM\n    # ------------------------------------------------------------------\n    # ASSUMPTION: DM is already one record per subject (SDTM requirement);\n    # duplicates, if any, are resolved by keeping the first record.\n    dm = dm.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    out = pd.DataFrame({\"USUBJID\": dm[\"USUBJID\"].map(_str_or_none).values})\n    out[\"TRT01P\"] = dm[\"ARM\"].map(_str_or_none).values\n    out[\"TRT01A\"] = dm[\"ACTARM\"].map(_str_or_none).values\n\n    # ------------------------------------------------------------------\n    # Treatment start / end dates from EX\n    # ------------------------------------------------------------------\n    # ASSUMPTION: only records representing an actual administration of study\n    # treatment are used, i.e. EXDOSE > 0, or EXDOSE = 0 for a placebo\n    # treatment (zero-dose placebo patches are genuine administrations).\n    exdose = pd.to_numeric(ex[\"EXDOSE\"], errors=\"coerce\")\n    extrt = ex[\"EXTRT\"].map(lambda v: (_str_or_none(v) or \"\").upper())\n    valid = (exdose > 0) | ((exdose == 0) & extrt.str.contains(\"PLACEBO\"))\n\n    exv = ex.loc[valid].copy()\n    exv[\"_STDT\"] = exv[\"EXSTDTC\"].map(_to_date)\n    exv[\"_ENDT\"] = exv[\"EXENDTC\"].map(_to_date)\n    # ASSUMPTION: when an exposure record has no end date, its start date is\n    # used as the candidate last-exposure date for that record.\n    exv[\"_ENDT\"] = [en if en is not None else st\n                    for en, st in zip(exv[\"_ENDT\"], exv[\"_STDT\"])]\n\n    st_map = (exv.loc[exv[\"_STDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_STDT\"].min().to_dict())\n    en_map = (exv.loc[exv[\"_ENDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_ENDT\"].max().to_dict())\n\n    out[\"TRTSDT\"] = [st_map.get(u, None) for u in out[\"USUBJID\"]]\n    out[\"TRTEDT\"] = [en_map.get(u, None) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Treatment duration (inclusive of both first and last treatment days)\n    # ------------------------------------------------------------------\n    out[\"TRTDURD\"] = [\n        float((e - s).days + 1) if (s is not None and e is not None) else np.nan\n        for s, e in zip(out[\"TRTSDT\"], out[\"TRTEDT\"])\n    ]\n\n    # ------------------------------------------------------------------\n    # Safety population flag\n    # ------------------------------------------------------------------\n    # ASSUMPTION: a subject is in the safety population if they took at least\n    # one dose of study treatment, i.e. TRTSDT is non-missing.\n    out[\"SAFFL\"] = [\"Y\" if s is not None else \"N\" for s in out[\"TRTSDT\"]]\n\n    # ------------------------------------------------------------------\n    # Pooled age group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: pooled age groups are <18 / 18-64 / >64 (years), consistent\n    # with the age groupings used for this study population.\n    age = pd.to_numeric(dm[\"AGE\"], errors=\"coerce\").values\n\n    def _agegr1(a):\n        if a is None or (isinstance(a, float) and np.isnan(a)):\n            return None\n        if a < 18:\n            return \"<18\"\n        if a <= 64:\n            return \"18-64\"\n        return \">64\"\n\n    out[\"AGEGR1\"] = [_agegr1(a) for a in age]\n\n    # ------------------------------------------------------------------\n    # Pooled race group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: race is pooled into White vs Non-White; missing/unreported\n    # race remains missing.\n    def _racegr1(r):\n        r = _str_or_none(r)\n        if r is None:\n            return None\n        ru = r.upper()\n        if ru in (\"UNKNOWN\", \"NOT REPORTED\", \"UNRECORDED\"):\n            return None\n        return \"White\" if ru == \"WHITE\" else \"Non-White\"\n\n    out[\"RACEGR1\"] = [_racegr1(r) for r in dm[\"RACE\"].values]\n\n    # ------------------------------------------------------------------\n    # End of study status from DS disposition records\n    # ------------------------------------------------------------------\n    # ASSUMPTION: the study-level disposition record (DSCAT = 'DISPOSITION\n    # EVENT') determines EOSSTT; DSDECOD = 'COMPLETED' -> 'COMPLETED', any\n    # other disposition reason -> 'DISCONTINUED', and no disposition record\n    # -> 'ONGOING'. Where multiple disposition events exist, the last one\n    # (highest DSSEQ) is used.\n    dsd = ds.loc[ds[\"DSCAT\"].map(lambda v: (_str_or_none(v) or \"\").upper())\n                 == \"DISPOSITION EVENT\"].copy()\n    if \"DSSEQ\" in dsd.columns:\n        dsd[\"_SEQ\"] = pd.to_numeric(dsd[\"DSSEQ\"], errors=\"coerce\")\n    else:\n        dsd[\"_SEQ\"] = np.arange(len(dsd), dtype=float)\n    dsd = dsd.sort_values([\"USUBJID\", \"_SEQ\"])\n    last_disp = dsd.groupby(\"USUBJID\")[\"DSDECOD\"].last().to_dict()\n\n    def _eosstt(u):\n        if u not in last_disp:\n            return \"ONGOING\"\n        dec = _str_or_none(last_disp[u])\n        if dec is None:\n            return \"ONGOING\"\n        return \"COMPLETED\" if dec.upper() == \"COMPLETED\" else \"DISCONTINUED\"\n\n    out[\"EOSSTT\"] = [_eosstt(u) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Final structure / ordering\n    # ------------------------------------------------------------------\n    out = out[[\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\", \"TRTDURD\",\n               \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]]\n    out = out.sort_values(\"USUBJID\").reset_index(drop=True)\n\n    # Enforce object dtype holding datetime.date / str / None\n    for col in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\",\n                \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        out[col] = out[col].astype(object)\n    out[\"TRTDURD\"] = out[\"TRTDURD\"].astype(float)\n\n    return out",
+        "findings": [
+          {
+            "code": "MISSING_COUNT",
+            "layer": "CALIBRATED",
+            "variable": "TRTEDT",
+            "message": "expected 54 missing values, got 52",
+            "n_rows": 2,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "CT_VIOLATION",
+            "layer": "STRUCTURAL",
+            "variable": "RACEGR1",
+            "message": "values outside controlled terminology: [\"'Non-White'\"]",
+            "n_rows": 33,
+            "examples": [
+              "Non-White"
+            ],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "RACEGR1",
+            "message": "value distribution differs: expected {'White': 273, 'Non-white': 33}, got {'White': 273, 'Non-White': 33}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "EOSSTT",
+            "message": "value distribution differs: expected {'DISCONTINUED': 144, 'COMPLETED': 110, '': 52}, got {'DISCONTINUED': 196, 'COMPLETED': 110}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEDT",
+            "message": "6 of 306 values differ from ground truth",
+            "n_rows": 6,
+            "examples": [
+              {
+                "key": "01-704-1233",
+                "expected": "2013-04-04",
+                "got": "2013-04-05"
+              },
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "2013-07-05"
+              },
+              {
+                "key": "01-705-1031",
+                "expected": "2013-12-18",
+                "got": "2013-12-19"
+              },
+              {
+                "key": "01-705-1303",
+                "expected": "2013-12-30",
+                "got": "2013-12-31"
+              },
+              {
+                "key": "01-705-1377",
+                "expected": "2014-01-25",
+                "got": "2014-01-26"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTDURD",
+            "message": "6 of 306 values differ from ground truth",
+            "n_rows": 6,
+            "examples": [
+              {
+                "key": "01-704-1233",
+                "expected": "15.0",
+                "got": "16.0"
+              },
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "1.0"
+              },
+              {
+                "key": "01-705-1031",
+                "expected": "22.0",
+                "got": "23.0"
+              },
+              {
+                "key": "01-705-1303",
+                "expected": "15.0",
+                "got": "16.0"
+              },
+              {
+                "key": "01-705-1377",
+                "expected": "22.0",
+                "got": "23.0"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "RACEGR1",
+            "message": "33 of 306 values differ from ground truth",
+            "n_rows": 33,
+            "examples": [
+              {
+                "key": "01-701-1176",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1203",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1275",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1363",
+                "expected": "Non-white",
+                "got": "Non-White"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "DISCONTINUED"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 959,
+          "output_tokens": 4968,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      },
+      {
+        "n": 2,
+        "executed": true,
+        "code": "\"\"\"\nADSL - Subject-Level Analysis Dataset\nOne record per subject (key: USUBJID), derived from SDTM DM, EX and DS.\n\"\"\"\n\nimport datetime\nimport numpy as np\nimport pandas as pd\n\n# Provenance: every produced variable -> contributing source columns\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\"],\n}\n\n\ndef _to_date(value):\n    \"\"\"Parse an ISO-8601 SDTM date/datetime string into a datetime.date.\n\n    # ASSUMPTION: partial dates (less than a full YYYY-MM-DD) are not imputed and\n    # yield a missing analysis date, since the specification defines no\n    # imputation rules.\n    \"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = str(value).strip()\n    if len(s) < 10:\n        return None\n    try:\n        return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))\n    except (ValueError, TypeError):\n        return None\n\n\ndef _str_or_none(value):\n    \"\"\"Return a clean Python string, or None when missing.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    s = str(value).strip()\n    return s if s != \"\" else None\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy()\n    ds = sources[\"DS\"].copy()\n\n    # ------------------------------------------------------------------\n    # Base: one record per subject from DM\n    # ------------------------------------------------------------------\n    # ASSUMPTION: DM is already one record per subject (SDTM requirement);\n    # duplicates, if any, are resolved by keeping the first record.\n    dm = dm.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    out = pd.DataFrame({\"USUBJID\": dm[\"USUBJID\"].map(_str_or_none).values})\n    out[\"TRT01P\"] = dm[\"ARM\"].map(_str_or_none).values\n    out[\"TRT01A\"] = dm[\"ACTARM\"].map(_str_or_none).values\n\n    # ------------------------------------------------------------------\n    # Treatment start / end dates from EX\n    # ------------------------------------------------------------------\n    # ASSUMPTION: only records representing an actual administration of study\n    # treatment are used, i.e. EXDOSE > 0, or EXDOSE = 0 for a placebo\n    # treatment (zero-dose placebo patches are genuine administrations).\n    exdose = pd.to_numeric(ex[\"EXDOSE\"], errors=\"coerce\")\n    extrt = ex[\"EXTRT\"].map(lambda v: (_str_or_none(v) or \"\").upper())\n    valid = (exdose > 0) | ((exdose == 0) & extrt.str.contains(\"PLACEBO\"))\n\n    exv = ex.loc[valid].copy()\n    exv[\"_STDT\"] = exv[\"EXSTDTC\"].map(_to_date)\n    exv[\"_ENDT\"] = exv[\"EXENDTC\"].map(_to_date)\n\n    # ASSUMPTION: TRTSDT is the earliest non-missing exposure start date and\n    # TRTEDT is the latest non-missing exposure end date; no substitution of\n    # start dates for missing end dates is performed.\n    st_map = (exv.loc[exv[\"_STDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_STDT\"].min().to_dict())\n    en_map = (exv.loc[exv[\"_ENDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_ENDT\"].max().to_dict())\n\n    out[\"TRTSDT\"] = [st_map.get(u, None) for u in out[\"USUBJID\"]]\n    out[\"TRTEDT\"] = [en_map.get(u, None) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Treatment duration (inclusive of both first and last treatment days)\n    # ------------------------------------------------------------------\n    out[\"TRTDURD\"] = [\n        float((e - s).days + 1) if (s is not None and e is not None) else np.nan\n        for s, e in zip(out[\"TRTSDT\"], out[\"TRTEDT\"])\n    ]\n\n    # ------------------------------------------------------------------\n    # Safety population flag\n    # ------------------------------------------------------------------\n    # ASSUMPTION: a subject is in the safety population if they took at least\n    # one dose of study treatment, i.e. TRTSDT is non-missing.\n    out[\"SAFFL\"] = [\"Y\" if s is not None else \"N\" for s in out[\"TRTSDT\"]]\n\n    # ------------------------------------------------------------------\n    # Pooled age group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: pooled age groups are <18 / 18-64 / >64 (years), consistent\n    # with the age groupings used for this study population.\n    age = pd.to_numeric(dm[\"AGE\"], errors=\"coerce\").values\n\n    def _agegr1(a):\n        if a is None or (isinstance(a, float) and np.isnan(a)):\n            return None\n        if a < 18:\n            return \"<18\"\n        if a <= 64:\n            return \"18-64\"\n        return \">64\"\n\n    out[\"AGEGR1\"] = [_agegr1(a) for a in age]\n\n    # ------------------------------------------------------------------\n    # Pooled race group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: race is pooled into 'White' vs 'Non-white'; unknown / not\n    # reported race remains missing.\n    def _racegr1(r):\n        r = _str_or_none(r)\n        if r is None:\n            return None\n        ru = r.upper()\n        if ru in (\"UNKNOWN\", \"NOT REPORTED\", \"UNRECORDED\"):\n            return None\n        return \"White\" if ru == \"WHITE\" else \"Non-white\"\n\n    out[\"RACEGR1\"] = [_racegr1(r) for r in dm[\"RACE\"].values]\n\n    # ------------------------------------------------------------------\n    # End of study status from DS disposition records\n    # ------------------------------------------------------------------\n    # ASSUMPTION: the study disposition record (DSCAT = 'DISPOSITION EVENT')\n    # determines EOSSTT; DSDECOD = 'COMPLETED' -> 'COMPLETED', any other\n    # disposition reason -> 'DISCONTINUED'. Subjects without a disposition\n    # event record (e.g. screen failures) have EOSSTT missing.\n    # Where multiple disposition events exist, the last one (highest DSSEQ)\n    # is used.\n    dsd = ds.loc[ds[\"DSCAT\"].map(lambda v: (_str_or_none(v) or \"\").upper())\n                 == \"DISPOSITION EVENT\"].copy()\n    if \"DSSEQ\" in dsd.columns:\n        dsd[\"_SEQ\"] = pd.to_numeric(dsd[\"DSSEQ\"], errors=\"coerce\")\n    else:\n        dsd[\"_SEQ\"] = np.arange(len(dsd), dtype=float)\n    dsd = dsd.sort_values([\"USUBJID\", \"_SEQ\"])\n    last_disp = dsd.groupby(\"USUBJID\")[\"DSDECOD\"].last().to_dict()\n\n    def _eosstt(u):\n        if u not in last_disp:\n            return None\n        dec = _str_or_none(last_disp[u])\n        if dec is None:\n            return None\n        return \"COMPLETED\" if dec.upper() == \"COMPLETED\" else \"DISCONTINUED\"\n\n    out[\"EOSSTT\"] = [_eosstt(u) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Final structure / ordering\n    # ------------------------------------------------------------------\n    out = out[[\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\", \"TRTDURD\",\n               \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]]\n    out = out.sort_values(\"USUBJID\").reset_index(drop=True)\n\n    # Enforce object dtype holding datetime.date / str / None\n    for col in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\",\n                \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        out[col] = out[col].astype(object)\n    out[\"TRTDURD\"] = out[\"TRTDURD\"].astype(float)\n\n    return out",
+        "findings": [
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "EOSSTT",
+            "message": "value distribution differs: expected {'DISCONTINUED': 144, 'COMPLETED': 110, '': 52}, got {'DISCONTINUED': 196, 'COMPLETED': 110}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "DISCONTINUED"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 4685,
+          "output_tokens": 3927,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      },
+      {
+        "n": 3,
+        "executed": true,
+        "code": "\"\"\"\nADSL - Subject-Level Analysis Dataset\nOne record per subject (key: USUBJID), derived from SDTM DM, EX and DS.\n\"\"\"\n\nimport datetime\nimport numpy as np\nimport pandas as pd\n\n# Provenance: every produced variable -> contributing source columns\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\"],\n}\n\n\ndef _to_date(value):\n    \"\"\"Parse an ISO-8601 SDTM date/datetime string into a datetime.date.\n\n    # ASSUMPTION: partial dates (less than a full YYYY-MM-DD) are not imputed and\n    # yield a missing analysis date, since the specification defines no\n    # imputation rules.\n    \"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = str(value).strip()\n    if len(s) < 10:\n        return None\n    try:\n        return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))\n    except (ValueError, TypeError):\n        return None\n\n\ndef _str_or_none(value):\n    \"\"\"Return a clean Python string, or None when missing.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    s = str(value).strip()\n    return s if s != \"\" else None\n\n\ndef _upper(value):\n    return (_str_or_none(value) or \"\").upper()\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy()\n    ds = sources[\"DS\"].copy()\n\n    # ------------------------------------------------------------------\n    # Base: one record per subject from DM\n    # ------------------------------------------------------------------\n    # ASSUMPTION: DM is already one record per subject (SDTM requirement);\n    # duplicates, if any, are resolved by keeping the first record.\n    dm = dm.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    out = pd.DataFrame({\"USUBJID\": dm[\"USUBJID\"].map(_str_or_none).values})\n    out[\"TRT01P\"] = dm[\"ARM\"].map(_str_or_none).values\n    out[\"TRT01A\"] = dm[\"ACTARM\"].map(_str_or_none).values\n\n    # ------------------------------------------------------------------\n    # Treatment start / end dates from EX\n    # ------------------------------------------------------------------\n    # ASSUMPTION: only records representing an actual administration of study\n    # treatment are used, i.e. EXDOSE > 0, or EXDOSE = 0 for a placebo\n    # treatment (zero-dose placebo patches are genuine administrations).\n    exdose = pd.to_numeric(ex[\"EXDOSE\"], errors=\"coerce\")\n    extrt = ex[\"EXTRT\"].map(_upper)\n    valid = (exdose > 0) | ((exdose == 0) & extrt.str.contains(\"PLACEBO\"))\n\n    exv = ex.loc[valid].copy()\n    exv[\"_STDT\"] = exv[\"EXSTDTC\"].map(_to_date)\n    exv[\"_ENDT\"] = exv[\"EXENDTC\"].map(_to_date)\n\n    # ASSUMPTION: TRTSDT is the earliest non-missing exposure start date and\n    # TRTEDT is the latest non-missing exposure end date; no substitution of\n    # start dates for missing end dates is performed.\n    st_map = (exv.loc[exv[\"_STDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_STDT\"].min().to_dict())\n    en_map = (exv.loc[exv[\"_ENDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_ENDT\"].max().to_dict())\n\n    out[\"TRTSDT\"] = [st_map.get(u, None) for u in out[\"USUBJID\"]]\n    out[\"TRTEDT\"] = [en_map.get(u, None) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Treatment duration (inclusive of both first and last treatment days)\n    # ------------------------------------------------------------------\n    out[\"TRTDURD\"] = [\n        float((e - s).days + 1) if (s is not None and e is not None) else np.nan\n        for s, e in zip(out[\"TRTSDT\"], out[\"TRTEDT\"])\n    ]\n\n    # ------------------------------------------------------------------\n    # Safety population flag\n    # ------------------------------------------------------------------\n    # ASSUMPTION: a subject is in the safety population if they took at least\n    # one dose of study treatment, i.e. TRTSDT is non-missing.\n    out[\"SAFFL\"] = [\"Y\" if s is not None else \"N\" for s in out[\"TRTSDT\"]]\n\n    # ------------------------------------------------------------------\n    # Pooled age group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: pooled age groups are <18 / 18-64 / >64 (years), consistent\n    # with the age groupings used for this study population.\n    age = pd.to_numeric(dm[\"AGE\"], errors=\"coerce\").values\n\n    def _agegr1(a):\n        if a is None or (isinstance(a, float) and np.isnan(a)):\n            return None\n        if a < 18:\n            return \"<18\"\n        if a <= 64:\n            return \"18-64\"\n        return \">64\"\n\n    out[\"AGEGR1\"] = [_agegr1(a) for a in age]\n\n    # ------------------------------------------------------------------\n    # Pooled race group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: race is pooled into 'White' vs 'Non-white'; unknown / not\n    # reported race remains missing.\n    def _racegr1(r):\n        r = _str_or_none(r)\n        if r is None:\n            return None\n        ru = r.upper()\n        if ru in (\"UNKNOWN\", \"NOT REPORTED\", \"UNRECORDED\"):\n            return None\n        return \"White\" if ru == \"WHITE\" else \"Non-white\"\n\n    out[\"RACEGR1\"] = [_racegr1(r) for r in dm[\"RACE\"].values]\n\n    # ------------------------------------------------------------------\n    # End of study status from DS disposition records\n    # ------------------------------------------------------------------\n    # ASSUMPTION: EOSSTT applies only to subjects who entered the study\n    # proper, i.e. those with a 'RANDOMIZED' protocol milestone in DS.\n    # Subjects who never got that far (screen failures) have EOSSTT missing.\n    # For randomized subjects the study disposition event record\n    # (DSCAT = 'DISPOSITION EVENT') determines the status:\n    # DSDECOD = 'COMPLETED' -> 'COMPLETED', any other reason -> 'DISCONTINUED'.\n    # Where multiple disposition events exist, the last one (highest DSSEQ)\n    # is used.\n    ds[\"_CAT\"] = ds[\"DSCAT\"].map(_upper)\n    ds[\"_DEC\"] = ds[\"DSDECOD\"].map(_upper)\n\n    randomized = set(\n        ds.loc[(ds[\"_CAT\"] == \"PROTOCOL MILESTONE\") & (ds[\"_DEC\"] == \"RANDOMIZED\"),\n               \"USUBJID\"].map(_str_or_none).dropna()\n    )\n\n    # Disposition events, excluding non-randomization / screening outcomes\n    excl = {\"SCREEN FAILURE\", \"SCREENING NOT COMPLETED\", \"NOT RANDOMIZED\",\n            \"RANDOMIZED\"}\n    dsd = ds.loc[(ds[\"_CAT\"] == \"DISPOSITION EVENT\") & (~ds[\"_DEC\"].isin(excl))].copy()\n    if \"DSSEQ\" in dsd.columns:\n        dsd[\"_SEQ\"] = pd.to_numeric(dsd[\"DSSEQ\"], errors=\"coerce\")\n    else:\n        dsd[\"_SEQ\"] = np.arange(len(dsd), dtype=float)\n    dsd = dsd.sort_values([\"USUBJID\", \"_SEQ\"])\n    last_disp = dsd.groupby(\"USUBJID\")[\"_DEC\"].last().to_dict()\n\n    def _eosstt(u):\n        if u not in randomized:\n            return None\n        dec = last_disp.get(u)\n        if dec is None or dec == \"\":\n            return None\n        return \"COMPLETED\" if dec == \"COMPLETED\" else \"DISCONTINUED\"\n\n    out[\"EOSSTT\"] = [_eosstt(u) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Final structure / ordering\n    # ------------------------------------------------------------------\n    out = out[[\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\", \"TRTDURD\",\n               \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]]\n    out = out.sort_values(\"USUBJID\").reset_index(drop=True)\n\n    # Enforce object dtype holding datetime.date / str / None\n    for col in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\",\n                \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        out[col] = out[col].astype(object)\n    out[\"TRTDURD\"] = out[\"TRTDURD\"].astype(float)\n\n    return out",
+        "findings": [
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "nan"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "nan"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "nan"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "nan"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "nan"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 8127,
+          "output_tokens": 5103,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      },
+      {
+        "n": 4,
+        "executed": true,
+        "code": "\"\"\"\nADSL - Subject-Level Analysis Dataset\nOne record per subject (key: USUBJID), derived from SDTM DM, EX and DS.\n\"\"\"\n\nimport datetime\nimport numpy as np\nimport pandas as pd\n\n# Provenance: every produced variable -> contributing source columns\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\"],\n}\n\n\ndef _to_date(value):\n    \"\"\"Parse an ISO-8601 SDTM date/datetime string into a datetime.date.\n\n    # ASSUMPTION: partial dates (less than a full YYYY-MM-DD) are not imputed and\n    # yield a missing analysis date, since the specification defines no\n    # imputation rules.\n    \"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = str(value).strip()\n    if len(s) < 10:\n        return None\n    try:\n        return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))\n    except (ValueError, TypeError):\n        return None\n\n\ndef _str_or_none(value):\n    \"\"\"Return a clean Python string, or None when missing.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    s = str(value).strip()\n    return s if s != \"\" else None\n\n\ndef _upper(value):\n    return (_str_or_none(value) or \"\").upper()\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy()\n    ds = sources[\"DS\"].copy()\n\n    # ------------------------------------------------------------------\n    # Base: one record per subject from DM\n    # ------------------------------------------------------------------\n    # ASSUMPTION: DM is already one record per subject (SDTM requirement);\n    # duplicates, if any, are resolved by keeping the first record.\n    dm = dm.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    out = pd.DataFrame({\"USUBJID\": dm[\"USUBJID\"].map(_str_or_none).values})\n    out[\"TRT01P\"] = dm[\"ARM\"].map(_str_or_none).values\n    out[\"TRT01A\"] = dm[\"ACTARM\"].map(_str_or_none).values\n\n    # ------------------------------------------------------------------\n    # Treatment start / end dates from EX\n    # ------------------------------------------------------------------\n    # ASSUMPTION: only records representing an actual administration of study\n    # treatment are used, i.e. EXDOSE > 0, or EXDOSE = 0 for a placebo\n    # treatment (zero-dose placebo patches are genuine administrations).\n    exdose = pd.to_numeric(ex[\"EXDOSE\"], errors=\"coerce\")\n    extrt = ex[\"EXTRT\"].map(_upper)\n    valid = (exdose > 0) | ((exdose == 0) & extrt.str.contains(\"PLACEBO\"))\n\n    exv = ex.loc[valid].copy()\n    exv[\"_STDT\"] = exv[\"EXSTDTC\"].map(_to_date)\n    exv[\"_ENDT\"] = exv[\"EXENDTC\"].map(_to_date)\n\n    # ASSUMPTION: TRTSDT is the earliest non-missing exposure start date and\n    # TRTEDT is the latest non-missing exposure end date; no substitution of\n    # start dates for missing end dates is performed.\n    st_map = (exv.loc[exv[\"_STDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_STDT\"].min().to_dict())\n    en_map = (exv.loc[exv[\"_ENDT\"].notna()]\n                 .groupby(\"USUBJID\")[\"_ENDT\"].max().to_dict())\n\n    out[\"TRTSDT\"] = [st_map.get(u, None) for u in out[\"USUBJID\"]]\n    out[\"TRTEDT\"] = [en_map.get(u, None) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Treatment duration (inclusive of both first and last treatment days)\n    # ------------------------------------------------------------------\n    out[\"TRTDURD\"] = [\n        float((e - s).days + 1) if (s is not None and e is not None) else np.nan\n        for s, e in zip(out[\"TRTSDT\"], out[\"TRTEDT\"])\n    ]\n\n    # ------------------------------------------------------------------\n    # Safety population flag\n    # ------------------------------------------------------------------\n    # ASSUMPTION: a subject is in the safety population if they took at least\n    # one dose of study treatment, i.e. TRTSDT is non-missing.\n    out[\"SAFFL\"] = [\"Y\" if s is not None else \"N\" for s in out[\"TRTSDT\"]]\n\n    # ------------------------------------------------------------------\n    # Pooled age group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: pooled age groups are <18 / 18-64 / >64 (years), consistent\n    # with the age groupings used for this study population.\n    age = pd.to_numeric(dm[\"AGE\"], errors=\"coerce\").values\n\n    def _agegr1(a):\n        if a is None or (isinstance(a, float) and np.isnan(a)):\n            return \"\"\n        if a < 18:\n            return \"<18\"\n        if a <= 64:\n            return \"18-64\"\n        return \">64\"\n\n    out[\"AGEGR1\"] = [_agegr1(a) for a in age]\n\n    # ------------------------------------------------------------------\n    # Pooled race group\n    # ------------------------------------------------------------------\n    # ASSUMPTION: race is pooled into 'White' vs 'Non-white'; unknown / not\n    # reported race is left as a blank character value.\n    def _racegr1(r):\n        r = _str_or_none(r)\n        if r is None:\n            return \"\"\n        ru = r.upper()\n        if ru in (\"UNKNOWN\", \"NOT REPORTED\", \"UNRECORDED\"):\n            return \"\"\n        return \"White\" if ru == \"WHITE\" else \"Non-white\"\n\n    out[\"RACEGR1\"] = [_racegr1(r) for r in dm[\"RACE\"].values]\n\n    # ------------------------------------------------------------------\n    # End of study status from DS disposition records\n    # ------------------------------------------------------------------\n    # ASSUMPTION: EOSSTT applies only to subjects who entered the study\n    # proper, i.e. those with a 'RANDOMIZED' protocol milestone in DS.\n    # Subjects who never got that far (screen failures) have EOSSTT blank.\n    # For randomized subjects the study disposition event record\n    # (DSCAT = 'DISPOSITION EVENT') determines the status:\n    # DSDECOD = 'COMPLETED' -> 'COMPLETED', any other reason -> 'DISCONTINUED'.\n    # Where multiple disposition events exist, the last one (highest DSSEQ)\n    # is used.\n    ds[\"_CAT\"] = ds[\"DSCAT\"].map(_upper)\n    ds[\"_DEC\"] = ds[\"DSDECOD\"].map(_upper)\n\n    randomized = set(\n        ds.loc[(ds[\"_CAT\"] == \"PROTOCOL MILESTONE\") & (ds[\"_DEC\"] == \"RANDOMIZED\"),\n               \"USUBJID\"].map(_str_or_none).dropna()\n    )\n\n    # Disposition events, excluding non-randomization / screening outcomes\n    excl = {\"SCREEN FAILURE\", \"SCREENING NOT COMPLETED\", \"NOT RANDOMIZED\",\n            \"RANDOMIZED\"}\n    dsd = ds.loc[(ds[\"_CAT\"] == \"DISPOSITION EVENT\") & (~ds[\"_DEC\"].isin(excl))].copy()\n    if \"DSSEQ\" in dsd.columns:\n        dsd[\"_SEQ\"] = pd.to_numeric(dsd[\"DSSEQ\"], errors=\"coerce\")\n    else:\n        dsd[\"_SEQ\"] = np.arange(len(dsd), dtype=float)\n    dsd = dsd.sort_values([\"USUBJID\", \"_SEQ\"])\n    last_disp = dsd.groupby(\"USUBJID\")[\"_DEC\"].last().to_dict()\n\n    def _eosstt(u):\n        if u not in randomized:\n            return \"\"\n        dec = last_disp.get(u)\n        if dec is None or dec == \"\":\n            return \"\"\n        return \"COMPLETED\" if dec == \"COMPLETED\" else \"DISCONTINUED\"\n\n    out[\"EOSSTT\"] = [_eosstt(u) for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------------\n    # Final structure / ordering\n    # ------------------------------------------------------------------\n    out = out[[\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\", \"TRTDURD\",\n               \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]]\n    out = out.sort_values(\"USUBJID\").reset_index(drop=True)\n\n    # Enforce object dtype holding datetime.date / str / None\n    for col in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTEDT\",\n                \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        out[col] = out[col].astype(object)\n    out[\"TRTDURD\"] = out[\"TRTDURD\"].astype(float)\n\n    return out",
+        "findings": [],
+        "usage": {
+          "input_tokens": 11758,
+          "output_tokens": 4268,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  },
+  {
+    "dataset": "ADSL",
+    "level": "L1",
+    "repeat": 2,
+    "model": "claude-opus-5",
+    "score": 1.0,
+    "n_attempts": 2,
+    "target_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "clean_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "provenance": {
+      "USUBJID": [
+        "DM.USUBJID"
+      ],
+      "TRT01P": [
+        "DM.ARM"
+      ],
+      "TRT01A": [
+        "DM.ACTARM"
+      ],
+      "TRTSDT": [
+        "EX.USUBJID",
+        "EX.EXSTDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTEDT": [
+        "EX.USUBJID",
+        "EX.EXENDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "SAFFL": [
+        "ADSL.TRTSDT"
+      ],
+      "AGEGR1": [
+        "DM.AGE"
+      ],
+      "RACEGR1": [
+        "DM.RACE"
+      ],
+      "EOSSTT": [
+        "DS.USUBJID",
+        "DS.DSCAT",
+        "DS.DSDECOD",
+        "DS.DSSTDTC",
+        "DS.DSSEQ"
+      ]
+    },
+    "cost_usd": 0.2738,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "code": "\"\"\"\nADSL - Subject-Level Analysis Dataset (one record per subject).\n\nDerived from SDTM DM (subject-level demographics / treatment arms),\nEX (exposure, for treatment start/end dates) and DS (disposition, for EOSSTT).\n\"\"\"\n\nimport datetime\n\nimport numpy as np\nimport pandas as pd\n\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\", \"DS.DSSTDTC\", \"DS.DSSEQ\"],\n}\n\n\n# ---------------------------------------------------------------- helpers ----\ndef _to_date(value):\n    \"\"\"Parse an ISO 8601 date/datetime string to a datetime.date.\n\n    Returns None for missing values and for partial dates that do not carry a\n    full year-month-day component (no imputation is requested by the spec).\n    \"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = str(value).strip()\n    if s == \"\" or s.lower() in (\"nan\", \"nat\", \"none\"):\n        return None\n    s = s[:10]\n    if len(s) < 10:\n        return None\n    try:\n        return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))\n    except (ValueError, TypeError):\n        return None\n\n\ndef _to_str(value):\n    \"\"\"Character variables: Python str; missing represented as empty string.\"\"\"\n    if value is None:\n        return \"\"\n    if isinstance(value, float) and np.isnan(value):\n        return \"\"\n    s = str(value).strip()\n    if s.lower() in (\"nan\", \"nat\", \"none\"):\n        return \"\"\n    return s\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy() if \"EX\" in sources else pd.DataFrame()\n    ds = sources[\"DS\"].copy() if \"DS\" in sources else pd.DataFrame()\n\n    # ------------------------------------------------------------- skeleton --\n    out = pd.DataFrame({\"USUBJID\": dm[\"USUBJID\"].map(_to_str)})\n    out[\"TRT01P\"] = dm[\"ARM\"].map(_to_str).values\n    out[\"TRT01A\"] = dm[\"ACTARM\"].map(_to_str).values\n\n    # ------------------------------------------------- TRTSDT / TRTEDT (EX) --\n    # ASSUMPTION: a \"treatment exposure\" record is one with a positive dose or,\n    # for placebo (where EXDOSE is legitimately 0), any placebo administration.\n    # Records with a missing/unparsable start date contribute nothing.\n    trtsdt_map, trtedt_map = {}, {}\n    if len(ex) > 0:\n        exw = ex.copy()\n        dose = pd.to_numeric(exw.get(\"EXDOSE\"), errors=\"coerce\")\n        trt = exw.get(\"EXTRT\", pd.Series([\"\"] * len(exw))).map(_to_str).str.upper()\n        keep = (dose > 0) | ((dose == 0) & trt.str.contains(\"PLACEBO\", na=False))\n        exw = exw.loc[keep].copy()\n        exw[\"_ST\"] = exw[\"EXSTDTC\"].map(_to_date)\n        exw[\"_EN\"] = exw[\"EXENDTC\"].map(_to_date) if \"EXENDTC\" in exw.columns else None\n        exw = exw[exw[\"_ST\"].notna()]\n\n        for usubjid, grp in exw.groupby(exw[\"USUBJID\"].map(_to_str), sort=False):\n            starts = [d for d in grp[\"_ST\"] if d is not None]\n            if not starts:\n                continue\n            trtsdt_map[usubjid] = min(starts)\n            ends = [d for d in grp[\"_EN\"] if isinstance(d, datetime.date)]\n            # ASSUMPTION: if no exposure end date is collected, the last known\n            # exposure start date is used as the last exposure date.\n            trtedt_map[usubjid] = max(ends) if ends else max(starts)\n\n    out[\"TRTSDT\"] = [trtsdt_map.get(u) for u in out[\"USUBJID\"]]\n    out[\"TRTEDT\"] = [trtedt_map.get(u) for u in out[\"USUBJID\"]]\n\n    # ----------------------------------------------------------- TRTDURD ----\n    # Inclusive duration: TRTEDT - TRTSDT + 1 day; missing if either endpoint\n    # is missing.\n    durd = []\n    for s, e in zip(out[\"TRTSDT\"], out[\"TRTEDT\"]):\n        if isinstance(s, datetime.date) and isinstance(e, datetime.date):\n            durd.append(float((e - s).days + 1))\n        else:\n            durd.append(np.nan)\n    out[\"TRTDURD\"] = durd\n\n    # ------------------------------------------------------------- SAFFL ----\n    # ASSUMPTION: safety population = subjects with at least one documented\n    # exposure to study treatment (non-missing TRTSDT).\n    out[\"SAFFL\"] = [\"Y\" if isinstance(d, datetime.date) else \"N\" for d in out[\"TRTSDT\"]]\n\n    # ------------------------------------------------------------ AGEGR1 ----\n    # ASSUMPTION: pooled age groups as used for this study: <18, 18-64, >64.\n    age = pd.to_numeric(dm[\"AGE\"], errors=\"coerce\").values\n    agegr1 = []\n    for a in age:\n        if pd.isna(a):\n            agegr1.append(\"\")\n        elif a < 18:\n            agegr1.append(\"<18\")\n        elif a <= 64:\n            agegr1.append(\"18-64\")\n        else:\n            agegr1.append(\">64\")\n    out[\"AGEGR1\"] = agegr1\n\n    # ----------------------------------------------------------- RACEGR1 ----\n    # ASSUMPTION: pooled race group is White vs Non-White; missing race stays\n    # missing.\n    racegr1 = []\n    for r in dm[\"RACE\"].map(_to_str).values:\n        if r == \"\":\n            racegr1.append(\"\")\n        elif r.upper() == \"WHITE\":\n            racegr1.append(\"White\")\n        else:\n            racegr1.append(\"Non-White\")\n    out[\"RACEGR1\"] = racegr1\n\n    # ------------------------------------------------------------ EOSSTT ----\n    # ASSUMPTION: status is taken from the subject's DS \"DISPOSITION EVENT\"\n    # record (latest one, by start date then sequence, if more than one):\n    #   DSDECOD = COMPLETED                      -> \"COMPLETED\"\n    #   DSDECOD indicates screen/enrollment fail -> \"NOT STARTED\"\n    #   any other disposition term               -> \"DISCONTINUED\"\n    #   no disposition event record              -> \"ONGOING\"\n    eosstt_map = {}\n    if len(ds) > 0 and \"DSCAT\" in ds.columns:\n        dsw = ds.copy()\n        dsw[\"_CAT\"] = dsw[\"DSCAT\"].map(_to_str).str.upper()\n        dsw = dsw[dsw[\"_CAT\"] == \"DISPOSITION EVENT\"].copy()\n        dsw[\"_DEC\"] = dsw[\"DSDECOD\"].map(_to_str).str.upper()\n        dsw[\"_DT\"] = dsw[\"DSSTDTC\"].map(_to_date) if \"DSSTDTC\" in dsw.columns else None\n        dsw[\"_DTORD\"] = [\n            d.toordinal() if isinstance(d, datetime.date) else -1 for d in dsw[\"_DT\"]\n        ]\n        dsw[\"_SEQ\"] = pd.to_numeric(dsw.get(\"DSSEQ\"), errors=\"coerce\").fillna(-1)\n        dsw = dsw.sort_values([\"_DTORD\", \"_SEQ\"])\n        for usubjid, grp in dsw.groupby(dsw[\"USUBJID\"].map(_to_str), sort=False):\n            dec = grp[\"_DEC\"].iloc[-1]\n            if dec == \"\":\n                status = \"ONGOING\"\n            elif dec == \"COMPLETED\":\n                status = \"COMPLETED\"\n            elif \"SCREEN FAILURE\" in dec or \"NOT COMPLETED\" in dec and \"SCREEN\" in dec:\n                status = \"NOT STARTED\"\n            else:\n                status = \"DISCONTINUED\"\n            eosstt_map[usubjid] = status\n    out[\"EOSSTT\"] = [eosstt_map.get(u, \"ONGOING\") for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------- finalise --\n    out = out[\n        [\n            \"USUBJID\",\n            \"TRT01P\",\n            \"TRT01A\",\n            \"TRTSDT\",\n            \"TRTEDT\",\n            \"TRTDURD\",\n            \"SAFFL\",\n            \"AGEGR1\",\n            \"RACEGR1\",\n            \"EOSSTT\",\n        ]\n    ]\n    # One record per subject (DM is already one record per subject; guard anyway)\n    out = out.drop_duplicates(subset=[\"USUBJID\"]).sort_values(\"USUBJID\")\n    out = out.reset_index(drop=True)\n\n    # enforce declared types\n    for c in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        out[c] = out[c].astype(object).map(_to_str)\n    for c in [\"TRTSDT\", \"TRTEDT\"]:\n        out[c] = out[c].astype(object).map(\n            lambda d: d if isinstance(d, datetime.date) else None\n        )\n    out[\"TRTDURD\"] = pd.to_numeric(out[\"TRTDURD\"], errors=\"coerce\")\n\n    return out",
+        "findings": [
+          {
+            "code": "MISSING_COUNT",
+            "layer": "CALIBRATED",
+            "variable": "TRTEDT",
+            "message": "expected 54 missing values, got 52",
+            "n_rows": 2,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "CT_VIOLATION",
+            "layer": "STRUCTURAL",
+            "variable": "RACEGR1",
+            "message": "values outside controlled terminology: [\"'Non-White'\"]",
+            "n_rows": 33,
+            "examples": [
+              "Non-White"
+            ],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "RACEGR1",
+            "message": "value distribution differs: expected {'White': 273, 'Non-white': 33}, got {'White': 273, 'Non-White': 33}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "CT_VIOLATION",
+            "layer": "STRUCTURAL",
+            "variable": "EOSSTT",
+            "message": "values outside controlled terminology: [\"'NOT STARTED'\"]",
+            "n_rows": 52,
+            "examples": [
+              "NOT STARTED"
+            ],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "EOSSTT",
+            "message": "value distribution differs: expected {'DISCONTINUED': 144, 'COMPLETED': 110, '': 52}, got {'DISCONTINUED': 144, 'COMPLETED': 110, 'NOT STARTED': 52}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEDT",
+            "message": "2 of 306 values differ from ground truth",
+            "n_rows": 2,
+            "examples": [
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "2013-07-05"
+              },
+              {
+                "key": "01-705-1382",
+                "expected": "nan",
+                "got": "2013-05-13"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTDURD",
+            "message": "2 of 306 values differ from ground truth",
+            "n_rows": 2,
+            "examples": [
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "1.0"
+              },
+              {
+                "key": "01-705-1382",
+                "expected": "nan",
+                "got": "1.0"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "RACEGR1",
+            "message": "33 of 306 values differ from ground truth",
+            "n_rows": 33,
+            "examples": [
+              {
+                "key": "01-701-1176",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1203",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1275",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1363",
+                "expected": "Non-white",
+                "got": "Non-White"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "NOT STARTED"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "NOT STARTED"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 959,
+          "output_tokens": 5457,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      },
+      {
+        "n": 2,
+        "executed": true,
+        "code": "\"\"\"\nADSL - Subject-Level Analysis Dataset (one record per subject).\n\nDerived from SDTM DM (subject-level demographics / treatment arms),\nEX (exposure, for treatment start/end dates) and DS (disposition, for EOSSTT).\n\"\"\"\n\nimport datetime\n\nimport numpy as np\nimport pandas as pd\n\nPROVENANCE = {\n    \"USUBJID\": [\"DM.USUBJID\"],\n    \"TRT01P\": [\"DM.ARM\"],\n    \"TRT01A\": [\"DM.ACTARM\"],\n    \"TRTSDT\": [\"EX.USUBJID\", \"EX.EXSTDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTEDT\": [\"EX.USUBJID\", \"EX.EXENDTC\", \"EX.EXDOSE\", \"EX.EXTRT\"],\n    \"TRTDURD\": [\"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"SAFFL\": [\"ADSL.TRTSDT\"],\n    \"AGEGR1\": [\"DM.AGE\"],\n    \"RACEGR1\": [\"DM.RACE\"],\n    \"EOSSTT\": [\"DS.USUBJID\", \"DS.DSCAT\", \"DS.DSDECOD\", \"DS.DSSTDTC\", \"DS.DSSEQ\"],\n}\n\n\n# ---------------------------------------------------------------- helpers ----\ndef _to_date(value):\n    \"\"\"Parse an ISO 8601 date/datetime string to a datetime.date.\n\n    Returns None for missing values and for partial dates that do not carry a\n    full year-month-day component (no imputation is requested by the spec).\n    \"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = str(value).strip()\n    if s == \"\" or s.lower() in (\"nan\", \"nat\", \"none\"):\n        return None\n    s = s[:10]\n    if len(s) < 10:\n        return None\n    try:\n        return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))\n    except (ValueError, TypeError):\n        return None\n\n\ndef _to_str(value):\n    \"\"\"Character variables: Python str; missing represented as empty string.\"\"\"\n    if value is None:\n        return \"\"\n    if isinstance(value, float) and np.isnan(value):\n        return \"\"\n    s = str(value).strip()\n    if s.lower() in (\"nan\", \"nat\", \"none\"):\n        return \"\"\n    return s\n\n\ndef derive(sources):\n    dm = sources[\"DM\"].copy()\n    ex = sources[\"EX\"].copy() if \"EX\" in sources else pd.DataFrame()\n    ds = sources[\"DS\"].copy() if \"DS\" in sources else pd.DataFrame()\n\n    # ------------------------------------------------------------- skeleton --\n    out = pd.DataFrame({\"USUBJID\": dm[\"USUBJID\"].map(_to_str)})\n    out[\"TRT01P\"] = dm[\"ARM\"].map(_to_str).values\n    out[\"TRT01A\"] = dm[\"ACTARM\"].map(_to_str).values\n\n    # ------------------------------------------------- TRTSDT / TRTEDT (EX) --\n    # ASSUMPTION: a \"treatment exposure\" record is one with a positive dose or,\n    # for placebo (where EXDOSE is legitimately 0), any placebo administration.\n    trtsdt_map, trtedt_map = {}, {}\n    if len(ex) > 0:\n        exw = ex.copy()\n        dose = pd.to_numeric(exw.get(\"EXDOSE\"), errors=\"coerce\")\n        trt = exw.get(\"EXTRT\", pd.Series([\"\"] * len(exw))).map(_to_str).str.upper()\n        keep = (dose > 0) | ((dose == 0) & trt.str.contains(\"PLACEBO\", na=False))\n        exw = exw.loc[keep].copy()\n        exw[\"_ST\"] = exw[\"EXSTDTC\"].map(_to_date)\n        if \"EXENDTC\" in exw.columns:\n            exw[\"_EN\"] = exw[\"EXENDTC\"].map(_to_date)\n        else:\n            exw[\"_EN\"] = None\n\n        for usubjid, grp in exw.groupby(exw[\"USUBJID\"].map(_to_str), sort=False):\n            starts = [d for d in grp[\"_ST\"] if isinstance(d, datetime.date)]\n            ends = [d for d in grp[\"_EN\"] if isinstance(d, datetime.date)]\n            if starts:\n                trtsdt_map[usubjid] = min(starts)\n            # ASSUMPTION: TRTEDT is left missing when no exposure end date is\n            # collected (no imputation from start dates).\n            if ends:\n                trtedt_map[usubjid] = max(ends)\n\n    out[\"TRTSDT\"] = [trtsdt_map.get(u) for u in out[\"USUBJID\"]]\n    out[\"TRTEDT\"] = [trtedt_map.get(u) for u in out[\"USUBJID\"]]\n\n    # ----------------------------------------------------------- TRTDURD ----\n    # Inclusive duration: TRTEDT - TRTSDT + 1 day; missing if either endpoint\n    # is missing.\n    durd = []\n    for s, e in zip(out[\"TRTSDT\"], out[\"TRTEDT\"]):\n        if isinstance(s, datetime.date) and isinstance(e, datetime.date):\n            durd.append(float((e - s).days + 1))\n        else:\n            durd.append(np.nan)\n    out[\"TRTDURD\"] = durd\n\n    # ------------------------------------------------------------- SAFFL ----\n    # ASSUMPTION: safety population = subjects with at least one documented\n    # exposure to study treatment (non-missing TRTSDT).\n    out[\"SAFFL\"] = [\"Y\" if isinstance(d, datetime.date) else \"N\" for d in out[\"TRTSDT\"]]\n\n    # ------------------------------------------------------------ AGEGR1 ----\n    # ASSUMPTION: pooled age groups as used for this study: <18, 18-64, >64.\n    age = pd.to_numeric(dm[\"AGE\"], errors=\"coerce\").values\n    agegr1 = []\n    for a in age:\n        if pd.isna(a):\n            agegr1.append(\"\")\n        elif a < 18:\n            agegr1.append(\"<18\")\n        elif a <= 64:\n            agegr1.append(\"18-64\")\n        else:\n            agegr1.append(\">64\")\n    out[\"AGEGR1\"] = agegr1\n\n    # ----------------------------------------------------------- RACEGR1 ----\n    # ASSUMPTION: pooled race group is White vs Non-white; missing race stays\n    # missing.\n    racegr1 = []\n    for r in dm[\"RACE\"].map(_to_str).values:\n        if r == \"\":\n            racegr1.append(\"\")\n        elif r.upper() == \"WHITE\":\n            racegr1.append(\"White\")\n        else:\n            racegr1.append(\"Non-white\")\n    out[\"RACEGR1\"] = racegr1\n\n    # ------------------------------------------------------------ EOSSTT ----\n    # ASSUMPTION: status is taken from the subject's DS \"DISPOSITION EVENT\"\n    # record (latest one, by start date then sequence, if more than one):\n    #   DSDECOD = COMPLETED                      -> \"COMPLETED\"\n    #   DSDECOD indicates screen failure         -> missing (never started study)\n    #   any other disposition term               -> \"DISCONTINUED\"\n    #   no disposition event record              -> missing\n    eosstt_map = {}\n    if len(ds) > 0 and \"DSCAT\" in ds.columns:\n        dsw = ds.copy()\n        dsw[\"_CAT\"] = dsw[\"DSCAT\"].map(_to_str).str.upper()\n        dsw = dsw[dsw[\"_CAT\"] == \"DISPOSITION EVENT\"].copy()\n        dsw[\"_DEC\"] = dsw[\"DSDECOD\"].map(_to_str).str.upper()\n        if \"DSSTDTC\" in dsw.columns:\n            dsw[\"_DT\"] = dsw[\"DSSTDTC\"].map(_to_date)\n        else:\n            dsw[\"_DT\"] = None\n        dsw[\"_DTORD\"] = [\n            d.toordinal() if isinstance(d, datetime.date) else -1 for d in dsw[\"_DT\"]\n        ]\n        dsw[\"_SEQ\"] = pd.to_numeric(dsw.get(\"DSSEQ\"), errors=\"coerce\").fillna(-1)\n        dsw = dsw.sort_values([\"_DTORD\", \"_SEQ\"])\n        for usubjid, grp in dsw.groupby(dsw[\"USUBJID\"].map(_to_str), sort=False):\n            dec = grp[\"_DEC\"].iloc[-1]\n            if dec == \"\":\n                status = \"\"\n            elif dec == \"COMPLETED\":\n                status = \"COMPLETED\"\n            elif \"SCREEN FAILURE\" in dec:\n                status = \"\"\n            else:\n                status = \"DISCONTINUED\"\n            eosstt_map[usubjid] = status\n    out[\"EOSSTT\"] = [eosstt_map.get(u, \"\") for u in out[\"USUBJID\"]]\n\n    # ------------------------------------------------------------- finalise --\n    out = out[\n        [\n            \"USUBJID\",\n            \"TRT01P\",\n            \"TRT01A\",\n            \"TRTSDT\",\n            \"TRTEDT\",\n            \"TRTDURD\",\n            \"SAFFL\",\n            \"AGEGR1\",\n            \"RACEGR1\",\n            \"EOSSTT\",\n        ]\n    ]\n    # One record per subject (DM is already one record per subject; guard anyway)\n    out = out.drop_duplicates(subset=[\"USUBJID\"]).sort_values(\"USUBJID\")\n    out = out.reset_index(drop=True)\n\n    # enforce declared types\n    for c in [\"USUBJID\", \"TRT01P\", \"TRT01A\", \"SAFFL\", \"AGEGR1\", \"RACEGR1\", \"EOSSTT\"]:\n        out[c] = out[c].astype(object).map(_to_str)\n    for c in [\"TRTSDT\", \"TRTEDT\"]:\n        out[c] = out[c].astype(object).map(\n            lambda d: d if isinstance(d, datetime.date) else None\n        )\n    out[\"TRTDURD\"] = pd.to_numeric(out[\"TRTDURD\"], errors=\"coerce\")\n\n    return out",
+        "findings": [],
+        "usage": {
+          "input_tokens": 5111,
+          "output_tokens": 4000,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  },
+  {
+    "dataset": "ADAE",
+    "level": "L1",
+    "repeat": 0,
+    "model": "claude-opus-5",
+    "score": 0.75,
+    "n_attempts": 1,
+    "target_variables": [
+      "AESEQ",
+      "ASTDT",
+      "ASTDTF",
+      "AENDT",
+      "AENDTF",
+      "ASTDY",
+      "AENDY",
+      "ADURN",
+      "TRTEMFL",
+      "AOCCIFL",
+      "ASEV",
+      "ASEVN"
+    ],
+    "clean_variables": [
+      "AESEQ",
+      "ASTDT",
+      "ASTDTF",
+      "AENDT",
+      "AENDTF",
+      "ADURN",
+      "AOCCIFL",
+      "ASEV",
+      "ASEVN"
+    ],
+    "provenance": {
+      "STUDYID": [
+        "ADSL.STUDYID"
+      ],
+      "USUBJID": [
+        "AE.USUBJID",
+        "ADSL.USUBJID"
+      ],
+      "SUBJID": [
+        "ADSL.SUBJID"
+      ],
+      "SITEID": [
+        "ADSL.SITEID"
+      ],
+      "COUNTRY": [
+        "ADSL.COUNTRY"
+      ],
+      "RFSTDTC": [
+        "ADSL.RFSTDTC"
+      ],
+      "RFENDTC": [
+        "ADSL.RFENDTC"
+      ],
+      "RFXSTDTC": [
+        "ADSL.RFXSTDTC"
+      ],
+      "RFXENDTC": [
+        "ADSL.RFXENDTC"
+      ],
+      "RFPENDTC": [
+        "ADSL.RFPENDTC"
+      ],
+      "SCRFDT": [
+        "ADSL.SCRFDT"
+      ],
+      "FRVDT": [
+        "ADSL.FRVDT"
+      ],
+      "DTHDTC": [
+        "ADSL.DTHDTC"
+      ],
+      "DTHADY": [
+        "ADSL.DTHADY"
+      ],
+      "DTHFL": [
+        "ADSL.DTHFL"
+      ],
+      "LDDTHELD": [
+        "ADSL.LDDTHELD"
+      ],
+      "LDDTHGR1": [
+        "ADSL.LDDTHGR1"
+      ],
+      "DTH30FL": [
+        "ADSL.DTH30FL"
+      ],
+      "DTHA30FL": [
+        "ADSL.DTHA30FL"
+      ],
+      "DTHDOM": [
+        "ADSL.DTHDOM"
+      ],
+      "DTHB30FL": [
+        "ADSL.DTHB30FL"
+      ],
+      "REGION1": [
+        "ADSL.REGION1"
+      ],
+      "DMDTC": [
+        "ADSL.DMDTC"
+      ],
+      "DMDY": [
+        "ADSL.DMDY"
+      ],
+      "AGE": [
+        "ADSL.AGE"
+      ],
+      "AGEU": [
+        "ADSL.AGEU"
+      ],
+      "AGEGR1": [
+        "ADSL.AGEGR1"
+      ],
+      "SEX": [
+        "ADSL.SEX"
+      ],
+      "RACE": [
+        "ADSL.RACE"
+      ],
+      "RACEGR1": [
+        "ADSL.RACEGR1"
+      ],
+      "ETHNIC": [
+        "ADSL.ETHNIC"
+      ],
+      "SAFFL": [
+        "ADSL.SAFFL"
+      ],
+      "ARM": [
+        "ADSL.ARM"
+      ],
+      "ARMCD": [
+        "ADSL.ARMCD"
+      ],
+      "ACTARM": [
+        "ADSL.ACTARM"
+      ],
+      "ACTARMCD": [
+        "ADSL.ACTARMCD"
+      ],
+      "TRT01P": [
+        "ADSL.TRT01P"
+      ],
+      "TRT01A": [
+        "ADSL.TRT01A"
+      ],
+      "TRTSDT": [
+        "ADSL.TRTSDT"
+      ],
+      "TRTSDTM": [
+        "ADSL.TRTSDTM"
+      ],
+      "TRTSTMF": [
+        "ADSL.TRTSTMF"
+      ],
+      "TRTEDT": [
+        "ADSL.TRTEDT"
+      ],
+      "TRTEDTM": [
+        "ADSL.TRTEDTM"
+      ],
+      "TRTETMF": [
+        "ADSL.TRTETMF"
+      ],
+      "EOSSTT": [
+        "ADSL.EOSSTT"
+      ],
+      "EOSDT": [
+        "ADSL.EOSDT"
+      ],
+      "RFICDTC": [
+        "ADSL.RFICDTC"
+      ],
+      "RANDDT": [
+        "ADSL.RANDDT"
+      ],
+      "LSTALVDT": [
+        "ADSL.LSTALVDT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTDURD"
+      ],
+      "DTHDT": [
+        "ADSL.DTHDT"
+      ],
+      "DTHDTF": [
+        "ADSL.DTHDTF"
+      ],
+      "DTHCAUS": [
+        "ADSL.DTHCAUS"
+      ],
+      "DTHCGR1": [
+        "ADSL.DTHCGR1"
+      ],
+      "BRTHDTC": [
+        "ADSL.BRTHDTC"
+      ],
+      "AESEQ": [
+        "AE.AESEQ"
+      ],
+      "ASTDT": [
+        "AE.AESTDTC"
+      ],
+      "ASTDTF": [
+        "AE.AESTDTC"
+      ],
+      "AENDT": [
+        "AE.AEENDTC"
+      ],
+      "AENDTF": [
+        "AE.AEENDTC"
+      ],
+      "ASTDY": [
+        "ADAE.ASTDT",
+        "ADAE.TRTSDT"
+      ],
+      "AENDY": [
+        "ADAE.AENDT",
+        "ADAE.TRTSDT"
+      ],
+      "ADURN": [
+        "ADAE.ASTDT",
+        "ADAE.AENDT"
+      ],
+      "TRTEMFL": [
+        "ADAE.ASTDT",
+        "ADAE.TRTSDT",
+        "ADAE.TRTEDT"
+      ],
+      "AOCCIFL": [
+        "ADAE.USUBJID",
+        "ADAE.ASEVN",
+        "ADAE.ASTDT",
+        "ADAE.AESEQ",
+        "ADAE.TRTEMFL"
+      ],
+      "ASEV": [
+        "AE.AESEV"
+      ],
+      "ASEVN": [
+        "ADAE.ASEV"
+      ]
+    },
+    "cost_usd": 0.2792,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "code": "\"\"\"\nADAE - Adverse Event Analysis Dataset\n\nStructure : one record per adverse event per subject (USUBJID, AESEQ)\nSources   : AE (SDTM), ADSL (derived)\n\"\"\"\n\nimport calendar\nimport datetime\nimport re\n\nimport numpy as np\nimport pandas as pd\n\n# ---------------------------------------------------------------------------\n# ADSL variables carried onto every AE record unchanged (USUBJID is the merge\n# key; the remaining 54 variables are the \"all 54 ADSL variables\" of the spec)\n# ---------------------------------------------------------------------------\n_ADSL_VARS = [\n    \"STUDYID\", \"USUBJID\", \"SUBJID\", \"SITEID\", \"COUNTRY\", \"RFSTDTC\", \"RFENDTC\",\n    \"RFXSTDTC\", \"RFXENDTC\", \"RFPENDTC\", \"SCRFDT\", \"FRVDT\", \"DTHDTC\", \"DTHADY\",\n    \"DTHFL\", \"LDDTHELD\", \"LDDTHGR1\", \"DTH30FL\", \"DTHA30FL\", \"DTHDOM\",\n    \"DTHB30FL\", \"REGION1\", \"DMDTC\", \"DMDY\", \"AGE\", \"AGEU\", \"AGEGR1\", \"SEX\",\n    \"RACE\", \"RACEGR1\", \"ETHNIC\", \"SAFFL\", \"ARM\", \"ARMCD\", \"ACTARM\", \"ACTARMCD\",\n    \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTSDTM\", \"TRTSTMF\", \"TRTEDT\", \"TRTEDTM\",\n    \"TRTETMF\", \"EOSSTT\", \"EOSDT\", \"RFICDTC\", \"RANDDT\", \"LSTALVDT\", \"TRTDURD\",\n    \"DTHDT\", \"DTHDTF\", \"DTHCAUS\", \"DTHCGR1\", \"BRTHDTC\",\n]\n\n# ADSL variables that are date typed (must stay datetime.date objects)\n_ADSL_DATE_VARS = [\"SCRFDT\", \"FRVDT\", \"TRTSDT\", \"TRTEDT\", \"EOSDT\", \"RANDDT\",\n                   \"LSTALVDT\", \"DTHDT\"]\n# ADSL variables that are datetime typed\n_ADSL_DTM_VARS = [\"TRTSDTM\", \"TRTEDTM\"]\n# ADSL variables that are numeric\n_ADSL_NUM_VARS = [\"DTHADY\", \"LDDTHELD\", \"DMDY\", \"AGE\", \"TRTDURD\"]\n# everything else carried from ADSL is character\n_ADSL_CHAR_VARS = [v for v in _ADSL_VARS\n                   if v not in _ADSL_DATE_VARS + _ADSL_DTM_VARS + _ADSL_NUM_VARS]\n\nPROVENANCE = {v: [\"ADSL.\" + v] for v in _ADSL_VARS}\nPROVENANCE[\"USUBJID\"] = [\"AE.USUBJID\", \"ADSL.USUBJID\"]\nPROVENANCE.update({\n    \"AESEQ\":   [\"AE.AESEQ\"],\n    \"ASTDT\":   [\"AE.AESTDTC\"],\n    \"ASTDTF\":  [\"AE.AESTDTC\"],\n    \"AENDT\":   [\"AE.AEENDTC\"],\n    \"AENDTF\":  [\"AE.AEENDTC\"],\n    \"ASTDY\":   [\"ADAE.ASTDT\", \"ADAE.TRTSDT\"],\n    \"AENDY\":   [\"ADAE.AENDT\", \"ADAE.TRTSDT\"],\n    \"ADURN\":   [\"ADAE.ASTDT\", \"ADAE.AENDT\"],\n    \"TRTEMFL\": [\"ADAE.ASTDT\", \"ADAE.TRTSDT\", \"ADAE.TRTEDT\"],\n    \"AOCCIFL\": [\"ADAE.USUBJID\", \"ADAE.ASEVN\", \"ADAE.ASTDT\", \"ADAE.AESEQ\",\n                \"ADAE.TRTEMFL\"],\n    \"ASEV\":    [\"AE.AESEV\"],\n    \"ASEVN\":   [\"ADAE.ASEV\"],\n})\n\n# ---------------------------------------------------------------------------\n# helpers\n# ---------------------------------------------------------------------------\n_DTC_RE = re.compile(r\"^(\\d{4})(?:-(\\d{2})(?:-(\\d{2}))?)?$\")\n\n\ndef _clean_str(value):\n    \"\"\"Return a stripped string, or None for any flavour of missing.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if value is pd.NaT:\n        return None\n    s = str(value).strip()\n    if s == \"\" or s.lower() in (\"nan\", \"none\", \"nat\"):\n        return None\n    return s\n\n\ndef _impute_dtc(dtc, is_start):\n    \"\"\"Impute a (possibly partial) ISO 8601 date string.\n\n    Returns (datetime.date | None, imputation flag).\n    ADaM DTF conventions: 'D' = day imputed, 'M' = month (and day) imputed,\n    blank = nothing imputed (or nothing could be imputed).\n    Start dates are imputed to the earliest possible day, end dates to the\n    latest possible day.\n    \"\"\"\n    s = _clean_str(dtc)\n    if s is None:\n        # ASSUMPTION: a completely missing date is left missing with a blank\n        # imputation flag (no imputation from other variables is performed).\n        return None, \"\"\n    datepart = s.split(\"T\")[0]\n    m = _DTC_RE.match(datepart)\n    if m is None:\n        # ASSUMPTION: a date with a missing year component cannot be imputed;\n        # it is left missing with a blank flag.\n        return None, \"\"\n    year = int(m.group(1))\n    month, day = m.group(2), m.group(3)\n    if month and day:\n        return datetime.date(year, int(month), int(day)), \"\"\n    if month:\n        month = int(month)\n        if is_start:\n            return datetime.date(year, month, 1), \"D\"\n        return datetime.date(year, month, calendar.monthrange(year, month)[1]), \"D\"\n    if is_start:\n        return datetime.date(year, 1, 1), \"M\"\n    return datetime.date(year, 12, 31), \"M\"\n\n\ndef _to_date(value):\n    \"\"\"Coerce an ADSL date-typed value to datetime.date (or None).\"\"\"\n    if value is None or value is pd.NaT:\n        return None\n    if isinstance(value, float) and np.isnan(value):\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    s = _clean_str(value)\n    if s is None:\n        return None\n    ts = pd.to_datetime(s, errors=\"coerce\")\n    return None if pd.isna(ts) else ts.date()\n\n\ndef _study_day(adt, refdt):\n    \"\"\"Relative day: no day 0 (ADaM convention).\"\"\"\n    if adt is None or refdt is None:\n        return np.nan\n    delta = (adt - refdt).days\n    return float(delta + 1) if delta >= 0 else float(delta)\n\n\n_ASEV_MAP = {\"MILD\": 1.0, \"MODERATE\": 2.0, \"SEVERE\": 3.0}\n\n\n# ---------------------------------------------------------------------------\n# main derivation\n# ---------------------------------------------------------------------------\ndef derive(sources):\n    adsl = sources[\"ADSL\"].copy()\n    ae = sources[\"AE\"].copy()\n\n    adsl = adsl[[c for c in _ADSL_VARS if c in adsl.columns]].copy()\n\n    ae_keep = ae[[\"USUBJID\", \"AESEQ\", \"AESTDTC\", \"AEENDTC\", \"AESEV\"]].copy()\n\n    # ASSUMPTION: every AE subject exists in ADSL; a left join from AE keeps\n    # all adverse event records (one record per AE per subject).\n    out = ae_keep.merge(adsl, on=\"USUBJID\", how=\"left\")\n\n    # --- AESEQ ------------------------------------------------------------\n    out[\"AESEQ\"] = pd.to_numeric(out[\"AESEQ\"], errors=\"coerce\").astype(float)\n\n    # --- ASTDT / ASTDTF / AENDT / AENDTF ----------------------------------\n    st = [_impute_dtc(v, True) for v in out[\"AESTDTC\"]]\n    en = [_impute_dtc(v, False) for v in out[\"AEENDTC\"]]\n    out[\"ASTDT\"] = [x[0] for x in st]\n    out[\"ASTDTF\"] = [x[1] for x in st]\n    out[\"AENDT\"] = [x[0] for x in en]\n    out[\"AENDTF\"] = [x[1] for x in en]\n\n    # --- ADSL dates normalised to datetime.date ---------------------------\n    for col in _ADSL_DATE_VARS:\n        out[col] = [_to_date(v) for v in out[col]]\n    for col in _ADSL_DTM_VARS:\n        out[col] = pd.to_datetime(out[col], errors=\"coerce\")\n    for col in _ADSL_NUM_VARS:\n        out[col] = pd.to_numeric(out[col], errors=\"coerce\").astype(float)\n    for col in _ADSL_CHAR_VARS:\n        out[col] = [\"\" if _clean_str(v) is None else _clean_str(v) for v in out[col]]\n\n    # --- ASTDY / AENDY ----------------------------------------------------\n    out[\"ASTDY\"] = [_study_day(a, r) for a, r in zip(out[\"ASTDT\"], out[\"TRTSDT\"])]\n    out[\"AENDY\"] = [_study_day(a, r) for a, r in zip(out[\"AENDT\"], out[\"TRTSDT\"])]\n\n    # --- ADURN ------------------------------------------------------------\n    # ASSUMPTION: duration is expressed in days, inclusive of both start and\n    # end dates (AENDT - ASTDT + 1); missing when either date is missing.\n    out[\"ADURN\"] = [\n        float((e - s).days + 1) if (s is not None and e is not None) else np.nan\n        for s, e in zip(out[\"ASTDT\"], out[\"AENDT\"])\n    ]\n\n    # --- TRTEMFL ----------------------------------------------------------\n    # ASSUMPTION: an event is treatment emergent when its (imputed) analysis\n    # start date is on or after first dose and no later than 30 days after\n    # last dose; when TRTEDT is missing the upper bound is not applied.\n    trtemfl = []\n    for astdt, tsdt, tedt in zip(out[\"ASTDT\"], out[\"TRTSDT\"], out[\"TRTEDT\"]):\n        flag = \"\"\n        if astdt is not None and tsdt is not None and astdt >= tsdt:\n            if tedt is None or astdt <= tedt + datetime.timedelta(days=30):\n                flag = \"Y\"\n        trtemfl.append(flag)\n    out[\"TRTEMFL\"] = trtemfl\n\n    # --- ASEV / ASEVN -----------------------------------------------------\n    out[\"ASEV\"] = [\"\" if _clean_str(v) is None else _clean_str(v) for v in out[\"AESEV\"]]\n    out[\"ASEVN\"] = [_ASEV_MAP.get(v.upper(), np.nan) if v != \"\" else np.nan\n                    for v in out[\"ASEV\"]]\n\n    # --- sort to final order before positional flagging -------------------\n    out = out.sort_values([\"USUBJID\", \"AESEQ\"], kind=\"mergesort\").reset_index(drop=True)\n\n    # --- AOCCIFL: first most-severe treatment-emergent event per subject --\n    # ASSUMPTION: only treatment-emergent records with a non-missing severity\n    # are eligible; ties on severity are broken by earliest ASTDT then lowest\n    # AESEQ.\n    tmp = out[[\"USUBJID\", \"AESEQ\", \"ASEVN\", \"TRTEMFL\"]].copy()\n    ast = pd.to_datetime(pd.Series(out[\"ASTDT\"]), errors=\"coerce\")\n    tmp[\"_AST\"] = ast.fillna(pd.Timestamp(\"2262-01-01\"))\n    cand = tmp[(tmp[\"TRTEMFL\"] == \"Y\") & tmp[\"ASEVN\"].notna()]\n    out[\"AOCCIFL\"] = \"\"\n    if len(cand):\n        cand = cand.sort_values(\n            [\"USUBJID\", \"ASEVN\", \"_AST\", \"AESEQ\"],\n            ascending=[True, False, True, True], kind=\"mergesort\",\n        )\n        first_idx = cand.groupby(\"USUBJID\", sort=False).head(1).index\n        out.loc[first_idx, \"AOCCIFL\"] = \"Y\"\n\n    # --- final variable set / order ---------------------------------------\n    final_cols = (\n        [\"STUDYID\", \"USUBJID\", \"AESEQ\"]\n        + [c for c in _ADSL_VARS if c not in (\"STUDYID\", \"USUBJID\")]\n        + [\"ASTDT\", \"ASTDTF\", \"AENDT\", \"AENDTF\", \"ASTDY\", \"AENDY\", \"ADURN\",\n           \"TRTEMFL\", \"AOCCIFL\", \"ASEV\", \"ASEVN\"]\n    )\n    return out[final_cols].reset_index(drop=True)",
+        "findings": [
+          {
+            "code": "PROVENANCE_INCOMPLETE",
+            "layer": "PROVENANCE",
+            "variable": "ASTDY",
+            "message": "source(s) ['ADSL.TRTSDT'] used by the spec but not declared; model declared ['ADAE.ASTDT', 'ADAE.TRTSDT']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "PROVENANCE_INCOMPLETE",
+            "layer": "PROVENANCE",
+            "variable": "AENDY",
+            "message": "source(s) ['ADSL.TRTSDT'] used by the spec but not declared; model declared ['ADAE.AENDT', 'ADAE.TRTSDT']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "PROVENANCE_INCOMPLETE",
+            "layer": "PROVENANCE",
+            "variable": "TRTEMFL",
+            "message": "source(s) ['ADSL.TRTEDT', 'ADSL.TRTSDT'] used by the spec but not declared; model declared ['ADAE.ASTDT', 'ADAE.TRTEDT', 'ADAE.TRTSDT']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          }
+        ],
+        "usage": {
+          "input_tokens": 1230,
+          "output_tokens": 10781,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  },
+  {
+    "dataset": "ADAE",
+    "level": "L1",
+    "repeat": 1,
+    "model": "claude-opus-5",
+    "score": 1.0,
+    "n_attempts": 1,
+    "target_variables": [
+      "AESEQ",
+      "ASTDT",
+      "ASTDTF",
+      "AENDT",
+      "AENDTF",
+      "ASTDY",
+      "AENDY",
+      "ADURN",
+      "TRTEMFL",
+      "AOCCIFL",
+      "ASEV",
+      "ASEVN"
+    ],
+    "clean_variables": [
+      "AESEQ",
+      "ASTDT",
+      "ASTDTF",
+      "AENDT",
+      "AENDTF",
+      "ASTDY",
+      "AENDY",
+      "ADURN",
+      "TRTEMFL",
+      "AOCCIFL",
+      "ASEV",
+      "ASEVN"
+    ],
+    "provenance": {
+      "STUDYID": [
+        "ADSL.STUDYID"
+      ],
+      "USUBJID": [
+        "ADSL.USUBJID"
+      ],
+      "SUBJID": [
+        "ADSL.SUBJID"
+      ],
+      "SITEID": [
+        "ADSL.SITEID"
+      ],
+      "COUNTRY": [
+        "ADSL.COUNTRY"
+      ],
+      "RFSTDTC": [
+        "ADSL.RFSTDTC"
+      ],
+      "RFENDTC": [
+        "ADSL.RFENDTC"
+      ],
+      "RFXSTDTC": [
+        "ADSL.RFXSTDTC"
+      ],
+      "RFXENDTC": [
+        "ADSL.RFXENDTC"
+      ],
+      "RFPENDTC": [
+        "ADSL.RFPENDTC"
+      ],
+      "SCRFDT": [
+        "ADSL.SCRFDT"
+      ],
+      "FRVDT": [
+        "ADSL.FRVDT"
+      ],
+      "DTHDTC": [
+        "ADSL.DTHDTC"
+      ],
+      "DTHADY": [
+        "ADSL.DTHADY"
+      ],
+      "DTHFL": [
+        "ADSL.DTHFL"
+      ],
+      "LDDTHELD": [
+        "ADSL.LDDTHELD"
+      ],
+      "LDDTHGR1": [
+        "ADSL.LDDTHGR1"
+      ],
+      "DTH30FL": [
+        "ADSL.DTH30FL"
+      ],
+      "DTHA30FL": [
+        "ADSL.DTHA30FL"
+      ],
+      "DTHDOM": [
+        "ADSL.DTHDOM"
+      ],
+      "DTHB30FL": [
+        "ADSL.DTHB30FL"
+      ],
+      "REGION1": [
+        "ADSL.REGION1"
+      ],
+      "DMDTC": [
+        "ADSL.DMDTC"
+      ],
+      "DMDY": [
+        "ADSL.DMDY"
+      ],
+      "AGE": [
+        "ADSL.AGE"
+      ],
+      "AGEU": [
+        "ADSL.AGEU"
+      ],
+      "AGEGR1": [
+        "ADSL.AGEGR1"
+      ],
+      "SEX": [
+        "ADSL.SEX"
+      ],
+      "RACE": [
+        "ADSL.RACE"
+      ],
+      "RACEGR1": [
+        "ADSL.RACEGR1"
+      ],
+      "ETHNIC": [
+        "ADSL.ETHNIC"
+      ],
+      "SAFFL": [
+        "ADSL.SAFFL"
+      ],
+      "ARM": [
+        "ADSL.ARM"
+      ],
+      "ARMCD": [
+        "ADSL.ARMCD"
+      ],
+      "ACTARM": [
+        "ADSL.ACTARM"
+      ],
+      "ACTARMCD": [
+        "ADSL.ACTARMCD"
+      ],
+      "TRT01P": [
+        "ADSL.TRT01P"
+      ],
+      "TRT01A": [
+        "ADSL.TRT01A"
+      ],
+      "TRTSDT": [
+        "ADSL.TRTSDT"
+      ],
+      "TRTSDTM": [
+        "ADSL.TRTSDTM"
+      ],
+      "TRTSTMF": [
+        "ADSL.TRTSTMF"
+      ],
+      "TRTEDT": [
+        "ADSL.TRTEDT"
+      ],
+      "TRTEDTM": [
+        "ADSL.TRTEDTM"
+      ],
+      "TRTETMF": [
+        "ADSL.TRTETMF"
+      ],
+      "EOSSTT": [
+        "ADSL.EOSSTT"
+      ],
+      "EOSDT": [
+        "ADSL.EOSDT"
+      ],
+      "RFICDTC": [
+        "ADSL.RFICDTC"
+      ],
+      "RANDDT": [
+        "ADSL.RANDDT"
+      ],
+      "LSTALVDT": [
+        "ADSL.LSTALVDT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTDURD"
+      ],
+      "DTHDT": [
+        "ADSL.DTHDT"
+      ],
+      "DTHDTF": [
+        "ADSL.DTHDTF"
+      ],
+      "DTHCAUS": [
+        "ADSL.DTHCAUS"
+      ],
+      "DTHCGR1": [
+        "ADSL.DTHCGR1"
+      ],
+      "BRTHDTC": [
+        "ADSL.BRTHDTC"
+      ],
+      "AESEQ": [
+        "AE.AESEQ"
+      ],
+      "ASTDT": [
+        "AE.AESTDTC"
+      ],
+      "ASTDTF": [
+        "AE.AESTDTC"
+      ],
+      "AENDT": [
+        "AE.AEENDTC"
+      ],
+      "AENDTF": [
+        "AE.AEENDTC"
+      ],
+      "ASTDY": [
+        "AE.AESTDTC",
+        "ADSL.TRTSDT"
+      ],
+      "AENDY": [
+        "AE.AEENDTC",
+        "ADSL.TRTSDT"
+      ],
+      "ADURN": [
+        "AE.AESTDTC",
+        "AE.AEENDTC"
+      ],
+      "TRTEMFL": [
+        "AE.AESTDTC",
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "AOCCIFL": [
+        "AE.USUBJID",
+        "AE.AESEV",
+        "AE.AESTDTC",
+        "AE.AESEQ",
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "ASEV": [
+        "AE.AESEV"
+      ],
+      "ASEVN": [
+        "AE.AESEV"
+      ]
+    },
+    "cost_usd": 0.2557,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "code": "import calendar\nimport datetime\n\nimport numpy as np\nimport pandas as pd\n\n# ---------------------------------------------------------------------------\n# ADSL variable classification (all ADSL variables are merged onto every AE\n# record unchanged; USUBJID is the merge key and is also the dataset key).\n# ---------------------------------------------------------------------------\nADSL_DATE_VARS = [\"SCRFDT\", \"FRVDT\", \"TRTSDT\", \"TRTEDT\", \"EOSDT\", \"RANDDT\",\n                  \"LSTALVDT\", \"DTHDT\"]\nADSL_DTM_VARS = [\"TRTSDTM\", \"TRTEDTM\"]\nADSL_NUM_VARS = [\"DTHADY\", \"LDDTHELD\", \"DMDY\", \"AGE\", \"TRTDURD\"]\nADSL_VARS = [\n    \"STUDYID\", \"USUBJID\", \"SUBJID\", \"SITEID\", \"COUNTRY\", \"RFSTDTC\", \"RFENDTC\",\n    \"RFXSTDTC\", \"RFXENDTC\", \"RFPENDTC\", \"SCRFDT\", \"FRVDT\", \"DTHDTC\", \"DTHADY\",\n    \"DTHFL\", \"LDDTHELD\", \"LDDTHGR1\", \"DTH30FL\", \"DTHA30FL\", \"DTHDOM\",\n    \"DTHB30FL\", \"REGION1\", \"DMDTC\", \"DMDY\", \"AGE\", \"AGEU\", \"AGEGR1\", \"SEX\",\n    \"RACE\", \"RACEGR1\", \"ETHNIC\", \"SAFFL\", \"ARM\", \"ARMCD\", \"ACTARM\", \"ACTARMCD\",\n    \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTSDTM\", \"TRTSTMF\", \"TRTEDT\", \"TRTEDTM\",\n    \"TRTETMF\", \"EOSSTT\", \"EOSDT\", \"RFICDTC\", \"RANDDT\", \"LSTALVDT\", \"TRTDURD\",\n    \"DTHDT\", \"DTHDTF\", \"DTHCAUS\", \"DTHCGR1\", \"BRTHDTC\",\n]\n\nADAE_VARS = [\"AESEQ\", \"ASTDT\", \"ASTDTF\", \"AENDT\", \"AENDTF\", \"ASTDY\", \"AENDY\",\n             \"ADURN\", \"TRTEMFL\", \"AOCCIFL\", \"ASEV\", \"ASEVN\"]\n\n# ASSUMPTION: Severity is collected using the MedDRA/CDISC 3-point scale;\n# unexpected or missing values yield a missing ASEVN.\nSEV_MAP = {\"MILD\": 1.0, \"MODERATE\": 2.0, \"SEVERE\": 3.0}\n\n# ASSUMPTION: Treatment-emergent window = first dose through last dose + 30\n# days (TRTEDT is named as a source, so an upper bound is intended).\nTRTEM_WINDOW_DAYS = 30\n\nPROVENANCE = {\n    # --- ADSL variables carried unchanged -----------------------------------\n    \"STUDYID\": [\"ADSL.STUDYID\"],\n    \"USUBJID\": [\"ADSL.USUBJID\"],\n    \"SUBJID\": [\"ADSL.SUBJID\"],\n    \"SITEID\": [\"ADSL.SITEID\"],\n    \"COUNTRY\": [\"ADSL.COUNTRY\"],\n    \"RFSTDTC\": [\"ADSL.RFSTDTC\"],\n    \"RFENDTC\": [\"ADSL.RFENDTC\"],\n    \"RFXSTDTC\": [\"ADSL.RFXSTDTC\"],\n    \"RFXENDTC\": [\"ADSL.RFXENDTC\"],\n    \"RFPENDTC\": [\"ADSL.RFPENDTC\"],\n    \"SCRFDT\": [\"ADSL.SCRFDT\"],\n    \"FRVDT\": [\"ADSL.FRVDT\"],\n    \"DTHDTC\": [\"ADSL.DTHDTC\"],\n    \"DTHADY\": [\"ADSL.DTHADY\"],\n    \"DTHFL\": [\"ADSL.DTHFL\"],\n    \"LDDTHELD\": [\"ADSL.LDDTHELD\"],\n    \"LDDTHGR1\": [\"ADSL.LDDTHGR1\"],\n    \"DTH30FL\": [\"ADSL.DTH30FL\"],\n    \"DTHA30FL\": [\"ADSL.DTHA30FL\"],\n    \"DTHDOM\": [\"ADSL.DTHDOM\"],\n    \"DTHB30FL\": [\"ADSL.DTHB30FL\"],\n    \"REGION1\": [\"ADSL.REGION1\"],\n    \"DMDTC\": [\"ADSL.DMDTC\"],\n    \"DMDY\": [\"ADSL.DMDY\"],\n    \"AGE\": [\"ADSL.AGE\"],\n    \"AGEU\": [\"ADSL.AGEU\"],\n    \"AGEGR1\": [\"ADSL.AGEGR1\"],\n    \"SEX\": [\"ADSL.SEX\"],\n    \"RACE\": [\"ADSL.RACE\"],\n    \"RACEGR1\": [\"ADSL.RACEGR1\"],\n    \"ETHNIC\": [\"ADSL.ETHNIC\"],\n    \"SAFFL\": [\"ADSL.SAFFL\"],\n    \"ARM\": [\"ADSL.ARM\"],\n    \"ARMCD\": [\"ADSL.ARMCD\"],\n    \"ACTARM\": [\"ADSL.ACTARM\"],\n    \"ACTARMCD\": [\"ADSL.ACTARMCD\"],\n    \"TRT01P\": [\"ADSL.TRT01P\"],\n    \"TRT01A\": [\"ADSL.TRT01A\"],\n    \"TRTSDT\": [\"ADSL.TRTSDT\"],\n    \"TRTSDTM\": [\"ADSL.TRTSDTM\"],\n    \"TRTSTMF\": [\"ADSL.TRTSTMF\"],\n    \"TRTEDT\": [\"ADSL.TRTEDT\"],\n    \"TRTEDTM\": [\"ADSL.TRTEDTM\"],\n    \"TRTETMF\": [\"ADSL.TRTETMF\"],\n    \"EOSSTT\": [\"ADSL.EOSSTT\"],\n    \"EOSDT\": [\"ADSL.EOSDT\"],\n    \"RFICDTC\": [\"ADSL.RFICDTC\"],\n    \"RANDDT\": [\"ADSL.RANDDT\"],\n    \"LSTALVDT\": [\"ADSL.LSTALVDT\"],\n    \"TRTDURD\": [\"ADSL.TRTDURD\"],\n    \"DTHDT\": [\"ADSL.DTHDT\"],\n    \"DTHDTF\": [\"ADSL.DTHDTF\"],\n    \"DTHCAUS\": [\"ADSL.DTHCAUS\"],\n    \"DTHCGR1\": [\"ADSL.DTHCGR1\"],\n    \"BRTHDTC\": [\"ADSL.BRTHDTC\"],\n    # --- Derived analysis variables -----------------------------------------\n    \"AESEQ\": [\"AE.AESEQ\"],\n    \"ASTDT\": [\"AE.AESTDTC\"],\n    \"ASTDTF\": [\"AE.AESTDTC\"],\n    \"AENDT\": [\"AE.AEENDTC\"],\n    \"AENDTF\": [\"AE.AEENDTC\"],\n    \"ASTDY\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\"],\n    \"AENDY\": [\"AE.AEENDTC\", \"ADSL.TRTSDT\"],\n    \"ADURN\": [\"AE.AESTDTC\", \"AE.AEENDTC\"],\n    \"TRTEMFL\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"AOCCIFL\": [\"AE.USUBJID\", \"AE.AESEV\", \"AE.AESTDTC\", \"AE.AESEQ\",\n                \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"ASEV\": [\"AE.AESEV\"],\n    \"ASEVN\": [\"AE.AESEV\"],\n}\n\n\n# ---------------------------------------------------------------------------\n# Helpers\n# ---------------------------------------------------------------------------\ndef _to_date(value):\n    \"\"\"Normalise an already-derived ADSL date value to datetime.date/None.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, datetime.datetime):\n        return value.date()\n    if isinstance(value, datetime.date):\n        return value\n    if isinstance(value, (pd.Timestamp,)):\n        return None if pd.isna(value) else value.date()\n    try:\n        if pd.isna(value):\n            return None\n    except (TypeError, ValueError):\n        pass\n    if isinstance(value, str):\n        s = value.strip()\n        if s == \"\":\n            return None\n        try:\n            return datetime.date.fromisoformat(s[:10])\n        except ValueError:\n            return None\n    return None\n\n\ndef _to_str(value):\n    \"\"\"Character variables must be Python strings; missing -> empty string.\"\"\"\n    if value is None:\n        return \"\"\n    try:\n        if pd.isna(value):\n            return \"\"\n    except (TypeError, ValueError):\n        pass\n    return str(value)\n\n\ndef _parse_dtc(dtc, mode):\n    \"\"\"Parse an ISO-8601 (possibly partial) date into (date, imputation flag).\n\n    mode='start' -> missing month/day imputed to earliest (Jan / 1st)\n    mode='end'   -> missing month/day imputed to latest (Dec / last of month)\n    Flag: '' complete, 'D' day imputed, 'M' month (and day) imputed,\n          'Y' year missing (date not imputable -> None).\n    \"\"\"\n    if dtc is None:\n        return None, \"\"\n    if not isinstance(dtc, str):\n        try:\n            if pd.isna(dtc):\n                return None, \"\"\n        except (TypeError, ValueError):\n            pass\n        dtc = str(dtc)\n    s = dtc.strip()\n    if s == \"\":\n        return None, \"\"\n    s = s.split(\"T\")[0]\n    parts = s.split(\"-\")\n    ypart = parts[0] if len(parts) > 0 else \"\"\n    mpart = parts[1] if len(parts) > 1 else \"\"\n    dpart = parts[2] if len(parts) > 2 else \"\"\n    if len(ypart) != 4 or not ypart.isdigit():\n        # ASSUMPTION: without a known year no analysis date can be derived.\n        return None, \"Y\"\n    year = int(ypart)\n    flag = \"\"\n    if mpart.isdigit() and 1 <= int(mpart) <= 12:\n        month = int(mpart)\n    else:\n        month = 1 if mode == \"start\" else 12\n        flag = \"M\"\n    last_day = calendar.monthrange(year, month)[1]\n    if dpart.isdigit() and 1 <= int(dpart) <= last_day:\n        day = int(dpart)\n    else:\n        day = 1 if mode == \"start\" else last_day\n        if flag == \"\":\n            flag = \"D\"\n    return datetime.date(year, month, day), flag\n\n\ndef _study_day(adt, trtsdt):\n    \"\"\"ADaM relative day: no day 0; day 1 is the day of first dose.\"\"\"\n    if adt is None or trtsdt is None:\n        return np.nan\n    delta = (adt - trtsdt).days\n    return float(delta + 1) if delta >= 0 else float(delta)\n\n\n# ---------------------------------------------------------------------------\n# Main derivation\n# ---------------------------------------------------------------------------\ndef derive(sources):\n    ae = sources[\"AE\"].copy()\n    adsl = sources[\"ADSL\"].copy()\n\n    adsl = adsl[[c for c in ADSL_VARS if c in adsl.columns]].copy()\n    # ASSUMPTION: ADSL is one record per subject; keep the first if duplicated.\n    adsl = adsl.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    # ASSUMPTION: AE records without a matching ADSL subject would be a data\n    # defect; a left merge keeps them visible rather than silently dropping.\n    df = ae.merge(adsl, on=\"USUBJID\", how=\"left\", suffixes=(\"\", \"_ADSL\"))\n\n    # --- ADSL variable typing (carried unchanged) ---------------------------\n    for col in ADSL_VARS:\n        if col not in df.columns:\n            df[col] = None\n        if col in ADSL_DATE_VARS:\n            df[col] = [_to_date(v) for v in df[col]]\n        elif col in ADSL_DTM_VARS:\n            df[col] = pd.to_datetime(df[col], errors=\"coerce\")\n        elif col in ADSL_NUM_VARS:\n            df[col] = pd.to_numeric(df[col], errors=\"coerce\")\n        else:\n            df[col] = [_to_str(v) for v in df[col]]\n\n    # --- AESEQ --------------------------------------------------------------\n    df[\"AESEQ\"] = pd.to_numeric(df[\"AESEQ\"], errors=\"coerce\")\n\n    # --- Analysis dates and imputation flags --------------------------------\n    st = [_parse_dtc(v, \"start\") for v in df.get(\"AESTDTC\", pd.Series([None] * len(df)))]\n    en = [_parse_dtc(v, \"end\") for v in df.get(\"AEENDTC\", pd.Series([None] * len(df)))]\n    df[\"ASTDT\"] = [x[0] for x in st]\n    df[\"ASTDTF\"] = [x[1] for x in st]\n    df[\"AENDT\"] = [x[0] for x in en]\n    df[\"AENDTF\"] = [x[1] for x in en]\n\n    # --- Relative days ------------------------------------------------------\n    df[\"ASTDY\"] = [_study_day(a, t) for a, t in zip(df[\"ASTDT\"], df[\"TRTSDT\"])]\n    df[\"AENDY\"] = [_study_day(a, t) for a, t in zip(df[\"AENDT\"], df[\"TRTSDT\"])]\n\n    # --- Duration (inclusive of both start and end day) ---------------------\n    df[\"ADURN\"] = [\n        float((e - s).days + 1) if (s is not None and e is not None) else np.nan\n        for s, e in zip(df[\"ASTDT\"], df[\"AENDT\"])\n    ]\n\n    # --- Treatment emergent flag -------------------------------------------\n    temfl = []\n    for a, ts, te in zip(df[\"ASTDT\"], df[\"TRTSDT\"], df[\"TRTEDT\"]):\n        if a is None or ts is None:\n            temfl.append(\"\")\n        elif a < ts:\n            temfl.append(\"\")\n        elif te is not None and a > te + datetime.timedelta(days=TRTEM_WINDOW_DAYS):\n            temfl.append(\"\")\n        else:\n            temfl.append(\"Y\")\n    df[\"TRTEMFL\"] = temfl\n\n    # --- Severity -----------------------------------------------------------\n    df[\"ASEV\"] = [_to_str(v).strip() for v in df.get(\"AESEV\", pd.Series([\"\"] * len(df)))]\n    df[\"ASEVN\"] = [SEV_MAP.get(v.upper(), np.nan) for v in df[\"ASEV\"]]\n\n    # --- AOCCIFL: first most-severe treatment-emergent event per subject ----\n    df[\"AOCCIFL\"] = \"\"\n    work = df[df[\"TRTEMFL\"] == \"Y\"].copy()\n    if len(work):\n        # ASSUMPTION: records with missing severity sort last; missing start\n        # dates sort last within the same severity.\n        work[\"_sevn\"] = work[\"ASEVN\"].fillna(-1.0)\n        work[\"_ord\"] = [\n            d.toordinal() if isinstance(d, datetime.date) else 10 ** 7\n            for d in work[\"ASTDT\"]\n        ]\n        work[\"_seq\"] = work[\"AESEQ\"].fillna(np.inf)\n        work = work.sort_values(\n            [\"USUBJID\", \"_sevn\", \"_ord\", \"_seq\"],\n            ascending=[True, False, True, True],\n            kind=\"mergesort\",\n        )\n        first_idx = work.groupby(\"USUBJID\", sort=False).head(1).index\n        df.loc[first_idx, \"AOCCIFL\"] = \"Y\"\n\n    # --- Final structure: one record per AE per subject, ordered by key -----\n    out_cols = ADSL_VARS + ADAE_VARS\n    out = df[out_cols].copy()\n    out = out.sort_values([\"USUBJID\", \"AESEQ\"], kind=\"mergesort\").reset_index(drop=True)\n    return out",
+        "findings": [],
+        "usage": {
+          "input_tokens": 1230,
+          "output_tokens": 9843,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  },
+  {
+    "dataset": "ADAE",
+    "level": "L1",
+    "repeat": 2,
+    "model": "claude-opus-5",
+    "score": 1.0,
+    "n_attempts": 3,
+    "target_variables": [
+      "AESEQ",
+      "ASTDT",
+      "ASTDTF",
+      "AENDT",
+      "AENDTF",
+      "ASTDY",
+      "AENDY",
+      "ADURN",
+      "TRTEMFL",
+      "AOCCIFL",
+      "ASEV",
+      "ASEVN"
+    ],
+    "clean_variables": [
+      "AESEQ",
+      "ASTDT",
+      "ASTDTF",
+      "AENDT",
+      "AENDTF",
+      "ASTDY",
+      "AENDY",
+      "ADURN",
+      "TRTEMFL",
+      "AOCCIFL",
+      "ASEV",
+      "ASEVN"
+    ],
+    "provenance": {
+      "STUDYID": [
+        "ADSL.STUDYID"
+      ],
+      "USUBJID": [
+        "ADSL.USUBJID"
+      ],
+      "SUBJID": [
+        "ADSL.SUBJID"
+      ],
+      "SITEID": [
+        "ADSL.SITEID"
+      ],
+      "COUNTRY": [
+        "ADSL.COUNTRY"
+      ],
+      "RFSTDTC": [
+        "ADSL.RFSTDTC"
+      ],
+      "RFENDTC": [
+        "ADSL.RFENDTC"
+      ],
+      "RFXSTDTC": [
+        "ADSL.RFXSTDTC"
+      ],
+      "RFXENDTC": [
+        "ADSL.RFXENDTC"
+      ],
+      "RFPENDTC": [
+        "ADSL.RFPENDTC"
+      ],
+      "SCRFDT": [
+        "ADSL.SCRFDT"
+      ],
+      "FRVDT": [
+        "ADSL.FRVDT"
+      ],
+      "DTHDTC": [
+        "ADSL.DTHDTC"
+      ],
+      "DTHADY": [
+        "ADSL.DTHADY"
+      ],
+      "DTHFL": [
+        "ADSL.DTHFL"
+      ],
+      "LDDTHELD": [
+        "ADSL.LDDTHELD"
+      ],
+      "LDDTHGR1": [
+        "ADSL.LDDTHGR1"
+      ],
+      "DTH30FL": [
+        "ADSL.DTH30FL"
+      ],
+      "DTHA30FL": [
+        "ADSL.DTHA30FL"
+      ],
+      "DTHDOM": [
+        "ADSL.DTHDOM"
+      ],
+      "DTHB30FL": [
+        "ADSL.DTHB30FL"
+      ],
+      "REGION1": [
+        "ADSL.REGION1"
+      ],
+      "DMDTC": [
+        "ADSL.DMDTC"
+      ],
+      "DMDY": [
+        "ADSL.DMDY"
+      ],
+      "AGE": [
+        "ADSL.AGE"
+      ],
+      "AGEU": [
+        "ADSL.AGEU"
+      ],
+      "AGEGR1": [
+        "ADSL.AGEGR1"
+      ],
+      "SEX": [
+        "ADSL.SEX"
+      ],
+      "RACE": [
+        "ADSL.RACE"
+      ],
+      "RACEGR1": [
+        "ADSL.RACEGR1"
+      ],
+      "ETHNIC": [
+        "ADSL.ETHNIC"
+      ],
+      "SAFFL": [
+        "ADSL.SAFFL"
+      ],
+      "ARM": [
+        "ADSL.ARM"
+      ],
+      "ARMCD": [
+        "ADSL.ARMCD"
+      ],
+      "ACTARM": [
+        "ADSL.ACTARM"
+      ],
+      "ACTARMCD": [
+        "ADSL.ACTARMCD"
+      ],
+      "TRT01P": [
+        "ADSL.TRT01P"
+      ],
+      "TRT01A": [
+        "ADSL.TRT01A"
+      ],
+      "TRTSDT": [
+        "ADSL.TRTSDT"
+      ],
+      "TRTSDTM": [
+        "ADSL.TRTSDTM"
+      ],
+      "TRTSTMF": [
+        "ADSL.TRTSTMF"
+      ],
+      "TRTEDT": [
+        "ADSL.TRTEDT"
+      ],
+      "TRTEDTM": [
+        "ADSL.TRTEDTM"
+      ],
+      "TRTETMF": [
+        "ADSL.TRTETMF"
+      ],
+      "EOSSTT": [
+        "ADSL.EOSSTT"
+      ],
+      "EOSDT": [
+        "ADSL.EOSDT"
+      ],
+      "RFICDTC": [
+        "ADSL.RFICDTC"
+      ],
+      "RANDDT": [
+        "ADSL.RANDDT"
+      ],
+      "LSTALVDT": [
+        "ADSL.LSTALVDT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTDURD"
+      ],
+      "DTHDT": [
+        "ADSL.DTHDT"
+      ],
+      "DTHDTF": [
+        "ADSL.DTHDTF"
+      ],
+      "DTHCAUS": [
+        "ADSL.DTHCAUS"
+      ],
+      "DTHCGR1": [
+        "ADSL.DTHCGR1"
+      ],
+      "BRTHDTC": [
+        "ADSL.BRTHDTC"
+      ],
+      "AESEQ": [
+        "AE.AESEQ"
+      ],
+      "ASTDT": [
+        "AE.AESTDTC"
+      ],
+      "ASTDTF": [
+        "AE.AESTDTC"
+      ],
+      "AENDT": [
+        "AE.AEENDTC"
+      ],
+      "AENDTF": [
+        "AE.AEENDTC"
+      ],
+      "ASTDY": [
+        "AE.AESTDTC",
+        "ADSL.TRTSDT"
+      ],
+      "AENDY": [
+        "AE.AEENDTC",
+        "ADSL.TRTSDT"
+      ],
+      "ADURN": [
+        "AE.AESTDTC",
+        "AE.AEENDTC"
+      ],
+      "TRTEMFL": [
+        "AE.AESTDTC",
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "AOCCIFL": [
+        "AE.AESEV",
+        "AE.AESTDTC",
+        "AE.AESEQ",
+        "AE.USUBJID",
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "ASEV": [
+        "AE.AESEV"
+      ],
+      "ASEVN": [
+        "AE.AESEV"
+      ]
+    },
+    "cost_usd": 0.6475,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "code": "\"\"\"\nADAE - Adverse Event Analysis Dataset\n\nOne record per adverse event per subject (key: USUBJID, AESEQ).\nAll ADSL variables are merged onto every AE record unchanged.\n\"\"\"\n\nimport datetime as dt\n\nimport numpy as np\nimport pandas as pd\n\n# ---------------------------------------------------------------------------\n# ADSL variables carried onto every AE record (USUBJID is the merge key,\n# the remaining 54 are the ADSL analysis variables).\n# ---------------------------------------------------------------------------\nADSL_VARS = [\n    \"STUDYID\", \"USUBJID\", \"SUBJID\", \"SITEID\", \"COUNTRY\", \"RFSTDTC\", \"RFENDTC\",\n    \"RFXSTDTC\", \"RFXENDTC\", \"RFPENDTC\", \"SCRFDT\", \"FRVDT\", \"DTHDTC\", \"DTHADY\",\n    \"DTHFL\", \"LDDTHELD\", \"LDDTHGR1\", \"DTH30FL\", \"DTHA30FL\", \"DTHDOM\",\n    \"DTHB30FL\", \"REGION1\", \"DMDTC\", \"DMDY\", \"AGE\", \"AGEU\", \"AGEGR1\", \"SEX\",\n    \"RACE\", \"RACEGR1\", \"ETHNIC\", \"SAFFL\", \"ARM\", \"ARMCD\", \"ACTARM\", \"ACTARMCD\",\n    \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTSDTM\", \"TRTSTMF\", \"TRTEDT\", \"TRTEDTM\",\n    \"TRTETMF\", \"EOSSTT\", \"EOSDT\", \"RFICDTC\", \"RANDDT\", \"LSTALVDT\", \"TRTDURD\",\n    \"DTHDT\", \"DTHDTF\", \"DTHCAUS\", \"DTHCGR1\", \"BRTHDTC\",\n]\n\n# ADSL variables that are date-typed (must be datetime.date on output)\nADSL_DATE_VARS = [\"SCRFDT\", \"FRVDT\", \"TRTSDT\", \"TRTEDT\", \"EOSDT\", \"RANDDT\",\n                  \"LSTALVDT\", \"DTHDT\"]\n# ADSL variables that are datetime-typed (left as datetimes)\nADSL_DTM_VARS = [\"TRTSDTM\", \"TRTEDTM\"]\n# ADSL numeric variables\nADSL_NUM_VARS = [\"DTHADY\", \"LDDTHELD\", \"DMDY\", \"AGE\", \"TRTDURD\"]\n\n# ---------------------------------------------------------------------------\n# Provenance\n# ---------------------------------------------------------------------------\nPROVENANCE = {v: [\"ADSL.\" + v] for v in ADSL_VARS}\nPROVENANCE.update({\n    \"AESEQ\": [\"AE.AESEQ\"],\n    \"ASTDT\": [\"AE.AESTDTC\"],\n    \"ASTDTF\": [\"AE.AESTDTC\"],\n    \"AENDT\": [\"AE.AEENDTC\"],\n    \"AENDTF\": [\"AE.AEENDTC\"],\n    \"ASTDY\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\"],\n    \"AENDY\": [\"AE.AEENDTC\", \"ADSL.TRTSDT\"],\n    \"ADURN\": [\"AE.AESTDTC\", \"AE.AEENDTC\"],\n    \"TRTEMFL\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"AOCCIFL\": [\"AE.AESEV\", \"AE.AESTDTC\", \"AE.AESEQ\", \"AE.USUBJID\",\n                \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"ASEV\": [\"AE.AESEV\"],\n    \"ASEVN\": [\"AE.AESEV\"],\n})\n\n# Final variable order (ADSL variables first, then AE analysis variables)\nOUT_VARS = ADSL_VARS + [\"AESEQ\", \"ASTDT\", \"ASTDTF\", \"AENDT\", \"AENDTF\",\n                        \"ASTDY\", \"AENDY\", \"ADURN\", \"TRTEMFL\", \"AOCCIFL\",\n                        \"ASEV\", \"ASEVN\"]\n\n# ASSUMPTION: Severity is collected using the standard MILD/MODERATE/SEVERE\n# scale; ASEVN is 1/2/3 respectively and missing when AESEV is not one of them.\n_SEV_MAP = {\"MILD\": 1.0, \"MODERATE\": 2.0, \"SEVERE\": 3.0}\n\n\n# ---------------------------------------------------------------------------\n# Helpers\n# ---------------------------------------------------------------------------\ndef _is_missing(v):\n    if v is None:\n        return True\n    try:\n        if isinstance(v, (float, np.floating)) and np.isnan(v):\n            return True\n    except Exception:\n        pass\n    try:\n        res = pd.isna(v)\n        if isinstance(res, bool):\n            return res\n    except Exception:\n        pass\n    return False\n\n\ndef _to_date(v):\n    \"\"\"Coerce a value coming from ADSL into a datetime.date (or None).\"\"\"\n    if _is_missing(v):\n        return None\n    if isinstance(v, pd.Timestamp):\n        return v.date()\n    if isinstance(v, dt.datetime):\n        return v.date()\n    if isinstance(v, dt.date):\n        return v\n    if isinstance(v, str):\n        s = v.strip()\n        if not s:\n            return None\n        try:\n            return pd.Timestamp(s).date()\n        except Exception:\n            return None\n    return None\n\n\ndef _to_str(v):\n    \"\"\"Coerce a value into a Python string ('' when missing).\"\"\"\n    if _is_missing(v):\n        return \"\"\n    if isinstance(v, str):\n        return v\n    return str(v)\n\n\ndef _last_day_of_month(year, month):\n    if month == 12:\n        return 31\n    return (dt.date(year, month + 1, 1) - dt.timedelta(days=1)).day\n\n\ndef _impute_dtc(dtc, start=True):\n    \"\"\"\n    Parse an ISO 8601 date/datetime string and impute missing components.\n\n    Returns (datetime.date or None, imputation flag).\n    Flag values follow ADaM conventions for the highest imputed component:\n      'D' - day imputed, 'M' - month (and day) imputed, '' - nothing imputed.\n    ASSUMPTION: start dates are imputed to the earliest possible date within\n    the known precision, end dates to the latest possible date; when the year\n    itself is unknown no imputation is performed (date left missing, flag '').\n    \"\"\"\n    if _is_missing(dtc):\n        return None, \"\"\n    s = str(dtc).strip()\n    if not s:\n        return None, \"\"\n    datepart = s.split(\"T\")[0]\n    if not datepart:\n        return None, \"\"\n    parts = datepart.split(\"-\")\n    y = parts[0]\n    if len(y) != 4 or not y.isdigit():\n        return None, \"\"\n    year = int(y)\n    mon = parts[1] if len(parts) > 1 and parts[1].isdigit() and len(parts[1]) == 2 else None\n    day = parts[2] if len(parts) > 2 and parts[2].isdigit() and len(parts[2]) == 2 else None\n\n    if mon is None:\n        flag = \"M\"\n        month = 1 if start else 12\n        dayn = 1 if start else _last_day_of_month(year, month)\n    elif day is None:\n        flag = \"D\"\n        month = int(mon)\n        dayn = 1 if start else _last_day_of_month(year, month)\n    else:\n        flag = \"\"\n        month = int(mon)\n        dayn = int(day)\n\n    try:\n        return dt.date(year, month, dayn), flag\n    except ValueError:\n        return None, \"\"\n\n\ndef _rel_day(adt, trtsdt):\n    \"\"\"ADaM relative study day (no day 0).\"\"\"\n    if adt is None or trtsdt is None:\n        return np.nan\n    delta = (adt - trtsdt).days\n    return float(delta + 1) if delta >= 0 else float(delta)\n\n\n# ---------------------------------------------------------------------------\n# Main derivation\n# ---------------------------------------------------------------------------\ndef derive(sources):\n    ae = sources[\"AE\"].copy()\n    adsl = sources[\"ADSL\"].copy()\n\n    # ---------------- prepare ADSL (one record per subject) ----------------\n    adsl = adsl[ADSL_VARS].copy()\n    # ASSUMPTION: ADSL is already one record per subject; guard against\n    # duplicates so the merge cannot fan out AE records.\n    adsl = adsl.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    for c in ADSL_DATE_VARS:\n        adsl[c] = [_to_date(v) for v in adsl[c]]\n    for c in ADSL_DTM_VARS:\n        adsl[c] = pd.to_datetime(adsl[c], errors=\"coerce\")\n    for c in ADSL_NUM_VARS:\n        adsl[c] = pd.to_numeric(adsl[c], errors=\"coerce\")\n    char_adsl = [c for c in ADSL_VARS\n                 if c not in ADSL_DATE_VARS + ADSL_DTM_VARS + ADSL_NUM_VARS]\n    for c in char_adsl:\n        adsl[c] = [_to_str(v) for v in adsl[c]]\n\n    # ---------------- AE side ----------------\n    ae = ae[[\"USUBJID\", \"AESEQ\", \"AESTDTC\", \"AEENDTC\", \"AESEV\"]].copy()\n    ae[\"USUBJID\"] = [_to_str(v) for v in ae[\"USUBJID\"]]\n    ae[\"AESEQ\"] = pd.to_numeric(ae[\"AESEQ\"], errors=\"coerce\")\n\n    # Merge ADSL onto every AE record (left join keeps all AE records)\n    adae = ae.merge(adsl, on=\"USUBJID\", how=\"left\")\n\n    # ---------------- analysis dates and imputation flags ----------------\n    st = [_impute_dtc(v, start=True) for v in adae[\"AESTDTC\"]]\n    en = [_impute_dtc(v, start=False) for v in adae[\"AEENDTC\"]]\n    adae[\"ASTDT\"] = [x[0] for x in st]\n    adae[\"ASTDTF\"] = [x[1] for x in st]\n    adae[\"AENDT\"] = [x[0] for x in en]\n    adae[\"AENDTF\"] = [x[1] for x in en]\n\n    # ---------------- relative days and duration ----------------\n    trtsdt = list(adae[\"TRTSDT\"])\n    trtedt = list(adae[\"TRTEDT\"])\n    astdt = list(adae[\"ASTDT\"])\n    aendt = list(adae[\"AENDT\"])\n\n    adae[\"ASTDY\"] = [_rel_day(a, t) for a, t in zip(astdt, trtsdt)]\n    adae[\"AENDY\"] = [_rel_day(a, t) for a, t in zip(aendt, trtsdt)]\n    adae[\"ADURN\"] = [float((e - s).days + 1) if (s is not None and e is not None\n                                                 and e >= s) else np.nan\n                     for s, e in zip(astdt, aendt)]\n\n    # ---------------- treatment emergent flag ----------------\n    # ASSUMPTION: no post-treatment follow-up window is defined in the\n    # specification, so an event is treatment emergent when its analysis start\n    # date falls on or after the first dose date and on or before the last dose\n    # date. Events with a missing analysis start date are not flagged.\n    temfl = []\n    for s, t0, t1 in zip(astdt, trtsdt, trtedt):\n        if s is None or t0 is None:\n            temfl.append(\"\")\n        elif s >= t0 and (t1 is None or s <= t1):\n            temfl.append(\"Y\")\n        else:\n            temfl.append(\"\")\n    adae[\"TRTEMFL\"] = temfl\n\n    # ---------------- severity ----------------\n    adae[\"ASEV\"] = [_to_str(v).strip() for v in adae[\"AESEV\"]]\n    adae[\"ASEVN\"] = [_SEV_MAP.get(v.upper(), np.nan) for v in adae[\"ASEV\"]]\n\n    # ---------------- first maximum severity occurrence flag ----------------\n    # Among treatment-emergent records only: highest ASEVN, then earliest\n    # analysis start date, then lowest AESEQ, one record per subject.\n    adae[\"_astdt_key\"] = pd.to_datetime(pd.Series(adae[\"ASTDT\"]).astype(\"object\"),\n                                        errors=\"coerce\")\n    adae[\"AOCCIFL\"] = \"\"\n    te = adae[adae[\"TRTEMFL\"] == \"Y\"]\n    if len(te) > 0:\n        te_sorted = te.sort_values(\n            by=[\"USUBJID\", \"ASEVN\", \"_astdt_key\", \"AESEQ\"],\n            ascending=[True, False, True, True],\n            na_position=\"last\",\n            kind=\"mergesort\",\n        )\n        first_idx = te_sorted.groupby(\"USUBJID\", sort=False).head(1).index\n        adae.loc[first_idx, \"AOCCIFL\"] = \"Y\"\n\n    # ---------------- finalise ----------------\n    adae = adae.sort_values(by=[\"USUBJID\", \"AESEQ\"], kind=\"mergesort\")\n    adae = adae.reset_index(drop=True)\n    adae = adae[OUT_VARS]\n\n    # enforce output types\n    for c in [\"ASTDT\", \"AENDT\"]:\n        adae[c] = [_to_date(v) for v in adae[c]]\n    for c in [\"ASTDTF\", \"AENDTF\", \"TRTEMFL\", \"AOCCIFL\", \"ASEV\"]:\n        adae[c] = [_to_str(v) for v in adae[c]]\n    for c in [\"AESEQ\", \"ASTDY\", \"AENDY\", \"ADURN\", \"ASEVN\"]:\n        adae[c] = pd.to_numeric(adae[c], errors=\"coerce\")\n\n    return adae",
+        "findings": [
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "TRTEMFL",
+            "message": "value distribution differs: expected {'Y': 1122, '': 69}, got {'Y': 1086, '': 105}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "AOCCIFL",
+            "message": "value distribution differs: expected {'Y': 217, '': 974}, got {'': 978, 'Y': 213}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEMFL",
+            "message": "36 of 1191 values differ from ground truth",
+            "n_rows": 36,
+            "examples": [
+              {
+                "key": "('01-701-1047', 4.0)",
+                "expected": "Y",
+                "got": ""
+              },
+              {
+                "key": "('01-701-1180', 7.0)",
+                "expected": "Y",
+                "got": ""
+              },
+              {
+                "key": "('01-701-1180', 8.0)",
+                "expected": "Y",
+                "got": ""
+              },
+              {
+                "key": "('01-701-1180', 9.0)",
+                "expected": "Y",
+                "got": ""
+              },
+              {
+                "key": "('01-701-1211', 9.0)",
+                "expected": "Y",
+                "got": ""
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "AOCCIFL",
+            "message": "8 of 1191 values differ from ground truth",
+            "n_rows": 8,
+            "examples": [
+              {
+                "key": "('01-701-1180', 1.0)",
+                "expected": "",
+                "got": "Y"
+              },
+              {
+                "key": "('01-701-1180', 7.0)",
+                "expected": "Y",
+                "got": ""
+              },
+              {
+                "key": "('01-701-1211', 2.0)",
+                "expected": "",
+                "got": "Y"
+              },
+              {
+                "key": "('01-701-1211', 9.0)",
+                "expected": "Y",
+                "got": ""
+              },
+              {
+                "key": "('01-705-1031', 1.0)",
+                "expected": "Y",
+                "got": ""
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 1230,
+          "output_tokens": 9259,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      },
+      {
+        "n": 2,
+        "executed": true,
+        "code": "\"\"\"\nADAE - Adverse Event Analysis Dataset\n\nOne record per adverse event per subject (key: USUBJID, AESEQ).\nAll ADSL variables are merged onto every AE record unchanged.\n\"\"\"\n\nimport datetime as dt\n\nimport numpy as np\nimport pandas as pd\n\n# ---------------------------------------------------------------------------\n# ADSL variables carried onto every AE record (USUBJID is the merge key,\n# the remaining 54 are the ADSL analysis variables).\n# ---------------------------------------------------------------------------\nADSL_VARS = [\n    \"STUDYID\", \"USUBJID\", \"SUBJID\", \"SITEID\", \"COUNTRY\", \"RFSTDTC\", \"RFENDTC\",\n    \"RFXSTDTC\", \"RFXENDTC\", \"RFPENDTC\", \"SCRFDT\", \"FRVDT\", \"DTHDTC\", \"DTHADY\",\n    \"DTHFL\", \"LDDTHELD\", \"LDDTHGR1\", \"DTH30FL\", \"DTHA30FL\", \"DTHDOM\",\n    \"DTHB30FL\", \"REGION1\", \"DMDTC\", \"DMDY\", \"AGE\", \"AGEU\", \"AGEGR1\", \"SEX\",\n    \"RACE\", \"RACEGR1\", \"ETHNIC\", \"SAFFL\", \"ARM\", \"ARMCD\", \"ACTARM\", \"ACTARMCD\",\n    \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTSDTM\", \"TRTSTMF\", \"TRTEDT\", \"TRTEDTM\",\n    \"TRTETMF\", \"EOSSTT\", \"EOSDT\", \"RFICDTC\", \"RANDDT\", \"LSTALVDT\", \"TRTDURD\",\n    \"DTHDT\", \"DTHDTF\", \"DTHCAUS\", \"DTHCGR1\", \"BRTHDTC\",\n]\n\n# ADSL variables that are date-typed (must be datetime.date on output)\nADSL_DATE_VARS = [\"SCRFDT\", \"FRVDT\", \"TRTSDT\", \"TRTEDT\", \"EOSDT\", \"RANDDT\",\n                  \"LSTALVDT\", \"DTHDT\"]\n# ADSL variables that are datetime-typed (left as datetimes)\nADSL_DTM_VARS = [\"TRTSDTM\", \"TRTEDTM\"]\n# ADSL numeric variables\nADSL_NUM_VARS = [\"DTHADY\", \"LDDTHELD\", \"DMDY\", \"AGE\", \"TRTDURD\"]\n\n# ---------------------------------------------------------------------------\n# Provenance\n# ---------------------------------------------------------------------------\nPROVENANCE = {v: [\"ADSL.\" + v] for v in ADSL_VARS}\nPROVENANCE.update({\n    \"AESEQ\": [\"AE.AESEQ\"],\n    \"ASTDT\": [\"AE.AESTDTC\"],\n    \"ASTDTF\": [\"AE.AESTDTC\"],\n    \"AENDT\": [\"AE.AEENDTC\"],\n    \"AENDTF\": [\"AE.AEENDTC\"],\n    \"ASTDY\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\"],\n    \"AENDY\": [\"AE.AEENDTC\", \"ADSL.TRTSDT\"],\n    \"ADURN\": [\"AE.AESTDTC\", \"AE.AEENDTC\"],\n    \"TRTEMFL\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"AOCCIFL\": [\"AE.AESEV\", \"AE.AESTDTC\", \"AE.AESEQ\", \"AE.USUBJID\",\n                \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"ASEV\": [\"AE.AESEV\"],\n    \"ASEVN\": [\"AE.AESEV\"],\n})\n\n# Final variable order (ADSL variables first, then AE analysis variables)\nOUT_VARS = ADSL_VARS + [\"AESEQ\", \"ASTDT\", \"ASTDTF\", \"AENDT\", \"AENDTF\",\n                        \"ASTDY\", \"AENDY\", \"ADURN\", \"TRTEMFL\", \"AOCCIFL\",\n                        \"ASEV\", \"ASEVN\"]\n\n# ASSUMPTION: Severity is collected using the standard MILD/MODERATE/SEVERE\n# scale; ASEVN is 1/2/3 respectively and missing when AESEV is not one of them.\n_SEV_MAP = {\"MILD\": 1.0, \"MODERATE\": 2.0, \"SEVERE\": 3.0}\n\n\n# ---------------------------------------------------------------------------\n# Helpers\n# ---------------------------------------------------------------------------\ndef _is_missing(v):\n    if v is None:\n        return True\n    try:\n        if isinstance(v, (float, np.floating)) and np.isnan(v):\n            return True\n    except Exception:\n        pass\n    try:\n        res = pd.isna(v)\n        if isinstance(res, bool):\n            return res\n    except Exception:\n        pass\n    return False\n\n\ndef _to_date(v):\n    \"\"\"Coerce a value coming from ADSL into a datetime.date (or None).\"\"\"\n    if _is_missing(v):\n        return None\n    if isinstance(v, pd.Timestamp):\n        return v.date()\n    if isinstance(v, dt.datetime):\n        return v.date()\n    if isinstance(v, dt.date):\n        return v\n    if isinstance(v, str):\n        s = v.strip()\n        if not s:\n            return None\n        try:\n            return pd.Timestamp(s).date()\n        except Exception:\n            return None\n    return None\n\n\ndef _to_str(v):\n    \"\"\"Coerce a value into a Python string ('' when missing).\"\"\"\n    if _is_missing(v):\n        return \"\"\n    if isinstance(v, str):\n        return v\n    return str(v)\n\n\ndef _last_day_of_month(year, month):\n    if month == 12:\n        return 31\n    return (dt.date(year, month + 1, 1) - dt.timedelta(days=1)).day\n\n\ndef _impute_dtc(dtc, start=True):\n    \"\"\"\n    Parse an ISO 8601 date/datetime string and impute missing components.\n\n    Returns (datetime.date or None, imputation flag).\n    Flag values follow ADaM conventions for the highest imputed component:\n      'D' - day imputed, 'M' - month (and day) imputed, '' - nothing imputed.\n    ASSUMPTION: start dates are imputed to the earliest possible date within\n    the known precision, end dates to the latest possible date; when the year\n    itself is unknown no imputation is performed (date left missing, flag '').\n    \"\"\"\n    if _is_missing(dtc):\n        return None, \"\"\n    s = str(dtc).strip()\n    if not s:\n        return None, \"\"\n    datepart = s.split(\"T\")[0]\n    if not datepart:\n        return None, \"\"\n    parts = datepart.split(\"-\")\n    y = parts[0]\n    if len(y) != 4 or not y.isdigit():\n        return None, \"\"\n    year = int(y)\n    mon = parts[1] if len(parts) > 1 and parts[1].isdigit() and len(parts[1]) == 2 else None\n    day = parts[2] if len(parts) > 2 and parts[2].isdigit() and len(parts[2]) == 2 else None\n\n    if mon is None:\n        flag = \"M\"\n        month = 1 if start else 12\n        dayn = 1 if start else _last_day_of_month(year, month)\n    elif day is None:\n        flag = \"D\"\n        month = int(mon)\n        dayn = 1 if start else _last_day_of_month(year, month)\n    else:\n        flag = \"\"\n        month = int(mon)\n        dayn = int(day)\n\n    try:\n        return dt.date(year, month, dayn), flag\n    except ValueError:\n        return None, \"\"\n\n\ndef _rel_day(adt, trtsdt):\n    \"\"\"ADaM relative study day (no day 0).\"\"\"\n    if adt is None or trtsdt is None:\n        return np.nan\n    delta = (adt - trtsdt).days\n    return float(delta + 1) if delta >= 0 else float(delta)\n\n\n# ---------------------------------------------------------------------------\n# Main derivation\n# ---------------------------------------------------------------------------\ndef derive(sources):\n    ae = sources[\"AE\"].copy()\n    adsl = sources[\"ADSL\"].copy()\n\n    # ---------------- prepare ADSL (one record per subject) ----------------\n    adsl = adsl[ADSL_VARS].copy()\n    # ASSUMPTION: ADSL is already one record per subject; guard against\n    # duplicates so the merge cannot fan out AE records.\n    adsl = adsl.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    for c in ADSL_DATE_VARS:\n        adsl[c] = [_to_date(v) for v in adsl[c]]\n    for c in ADSL_DTM_VARS:\n        adsl[c] = pd.to_datetime(adsl[c], errors=\"coerce\")\n    for c in ADSL_NUM_VARS:\n        adsl[c] = pd.to_numeric(adsl[c], errors=\"coerce\")\n    char_adsl = [c for c in ADSL_VARS\n                 if c not in ADSL_DATE_VARS + ADSL_DTM_VARS + ADSL_NUM_VARS]\n    for c in char_adsl:\n        adsl[c] = [_to_str(v) for v in adsl[c]]\n\n    # ---------------- AE side ----------------\n    ae = ae[[\"USUBJID\", \"AESEQ\", \"AESTDTC\", \"AEENDTC\", \"AESEV\"]].copy()\n    ae[\"USUBJID\"] = [_to_str(v) for v in ae[\"USUBJID\"]]\n    ae[\"AESEQ\"] = pd.to_numeric(ae[\"AESEQ\"], errors=\"coerce\")\n\n    # Merge ADSL onto every AE record (left join keeps all AE records)\n    adae = ae.merge(adsl, on=\"USUBJID\", how=\"left\")\n\n    # ---------------- analysis dates and imputation flags ----------------\n    st = [_impute_dtc(v, start=True) for v in adae[\"AESTDTC\"]]\n    en = [_impute_dtc(v, start=False) for v in adae[\"AEENDTC\"]]\n    adae[\"ASTDT\"] = [x[0] for x in st]\n    adae[\"ASTDTF\"] = [x[1] for x in st]\n    adae[\"AENDT\"] = [x[0] for x in en]\n    adae[\"AENDTF\"] = [x[1] for x in en]\n\n    # ---------------- relative days and duration ----------------\n    trtsdt = list(adae[\"TRTSDT\"])\n    astdt = list(adae[\"ASTDT\"])\n    aendt = list(adae[\"AENDT\"])\n\n    adae[\"ASTDY\"] = [_rel_day(a, t) for a, t in zip(astdt, trtsdt)]\n    adae[\"AENDY\"] = [_rel_day(a, t) for a, t in zip(aendt, trtsdt)]\n    adae[\"ADURN\"] = [float((e - s).days + 1) if (s is not None and e is not None\n                                                 and e >= s) else np.nan\n                     for s, e in zip(astdt, aendt)]\n\n    # ---------------- treatment emergent flag ----------------\n    # ASSUMPTION: an event is treatment emergent when its analysis start date\n    # is on or after the first dose date; no post-treatment cut-off is applied\n    # (events starting after the last dose remain treatment emergent).\n    # Events with a missing analysis start date or no treatment are not flagged.\n    temfl = []\n    for s, t0 in zip(astdt, trtsdt):\n        if s is None or t0 is None:\n            temfl.append(\"\")\n        elif s >= t0:\n            temfl.append(\"Y\")\n        else:\n            temfl.append(\"\")\n    adae[\"TRTEMFL\"] = temfl\n\n    # ---------------- severity ----------------\n    adae[\"ASEV\"] = [_to_str(v).strip() for v in adae[\"AESEV\"]]\n    adae[\"ASEVN\"] = [_SEV_MAP.get(v.upper(), np.nan) for v in adae[\"ASEV\"]]\n\n    # ---------------- first maximum severity occurrence flag ----------------\n    # Among treatment-emergent records only: highest ASEVN, then earliest\n    # analysis start date, then lowest AESEQ, one record per subject.\n    adae[\"_astdt_key\"] = pd.to_datetime(pd.Series(adae[\"ASTDT\"]).astype(\"object\"),\n                                        errors=\"coerce\")\n    adae[\"AOCCIFL\"] = \"\"\n    te = adae[adae[\"TRTEMFL\"] == \"Y\"]\n    if len(te) > 0:\n        te_sorted = te.sort_values(\n            by=[\"USUBJID\", \"ASEVN\", \"_astdt_key\", \"AESEQ\"],\n            ascending=[True, False, True, True],\n            na_position=\"last\",\n            kind=\"mergesort\",\n        )\n        first_idx = te_sorted.groupby(\"USUBJID\", sort=False).head(1).index\n        adae.loc[first_idx, \"AOCCIFL\"] = \"Y\"\n\n    # ---------------- finalise ----------------\n    adae = adae.sort_values(by=[\"USUBJID\", \"AESEQ\"], kind=\"mergesort\")\n    adae = adae.reset_index(drop=True)\n    adae = adae[OUT_VARS]\n\n    # enforce output types\n    for c in [\"ASTDT\", \"AENDT\"]:\n        adae[c] = [_to_date(v) for v in adae[c]]\n    for c in [\"ASTDTF\", \"AENDTF\", \"TRTEMFL\", \"AOCCIFL\", \"ASEV\"]:\n        adae[c] = [_to_str(v) for v in adae[c]]\n    for c in [\"AESEQ\", \"ASTDY\", \"AENDY\", \"ADURN\", \"ASEVN\"]:\n        adae[c] = pd.to_numeric(adae[c], errors=\"coerce\")\n\n    return adae",
+        "findings": [
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "TRTEMFL",
+            "message": "value distribution differs: expected {'Y': 1122, '': 69}, got {'Y': 1126, '': 65}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "AOCCIFL",
+            "message": "value distribution differs: expected {'Y': 217, '': 974}, got {'': 973, 'Y': 218}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEMFL",
+            "message": "4 of 1191 values differ from ground truth",
+            "n_rows": 4,
+            "examples": [
+              {
+                "key": "('01-705-1303', 1.0)",
+                "expected": "",
+                "got": "Y"
+              },
+              {
+                "key": "('01-705-1303', 2.0)",
+                "expected": "",
+                "got": "Y"
+              },
+              {
+                "key": "('01-705-1303', 3.0)",
+                "expected": "",
+                "got": "Y"
+              },
+              {
+                "key": "('01-705-1303', 4.0)",
+                "expected": "",
+                "got": "Y"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "AOCCIFL",
+            "message": "1 of 1191 values differ from ground truth",
+            "n_rows": 1,
+            "examples": [
+              {
+                "key": "('01-705-1303', 4.0)",
+                "expected": "",
+                "got": "Y"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          }
+        ],
+        "usage": {
+          "input_tokens": 6269,
+          "output_tokens": 4918,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      },
+      {
+        "n": 3,
+        "executed": true,
+        "code": "\"\"\"\nADAE - Adverse Event Analysis Dataset\n\nOne record per adverse event per subject (key: USUBJID, AESEQ).\nAll ADSL variables are merged onto every AE record unchanged.\n\"\"\"\n\nimport datetime as dt\n\nimport numpy as np\nimport pandas as pd\n\n# ---------------------------------------------------------------------------\n# ADSL variables carried onto every AE record (USUBJID is the merge key,\n# the remaining 54 are the ADSL analysis variables).\n# ---------------------------------------------------------------------------\nADSL_VARS = [\n    \"STUDYID\", \"USUBJID\", \"SUBJID\", \"SITEID\", \"COUNTRY\", \"RFSTDTC\", \"RFENDTC\",\n    \"RFXSTDTC\", \"RFXENDTC\", \"RFPENDTC\", \"SCRFDT\", \"FRVDT\", \"DTHDTC\", \"DTHADY\",\n    \"DTHFL\", \"LDDTHELD\", \"LDDTHGR1\", \"DTH30FL\", \"DTHA30FL\", \"DTHDOM\",\n    \"DTHB30FL\", \"REGION1\", \"DMDTC\", \"DMDY\", \"AGE\", \"AGEU\", \"AGEGR1\", \"SEX\",\n    \"RACE\", \"RACEGR1\", \"ETHNIC\", \"SAFFL\", \"ARM\", \"ARMCD\", \"ACTARM\", \"ACTARMCD\",\n    \"TRT01P\", \"TRT01A\", \"TRTSDT\", \"TRTSDTM\", \"TRTSTMF\", \"TRTEDT\", \"TRTEDTM\",\n    \"TRTETMF\", \"EOSSTT\", \"EOSDT\", \"RFICDTC\", \"RANDDT\", \"LSTALVDT\", \"TRTDURD\",\n    \"DTHDT\", \"DTHDTF\", \"DTHCAUS\", \"DTHCGR1\", \"BRTHDTC\",\n]\n\n# ADSL variables that are date-typed (must be datetime.date on output)\nADSL_DATE_VARS = [\"SCRFDT\", \"FRVDT\", \"TRTSDT\", \"TRTEDT\", \"EOSDT\", \"RANDDT\",\n                  \"LSTALVDT\", \"DTHDT\"]\n# ADSL variables that are datetime-typed (left as datetimes)\nADSL_DTM_VARS = [\"TRTSDTM\", \"TRTEDTM\"]\n# ADSL numeric variables\nADSL_NUM_VARS = [\"DTHADY\", \"LDDTHELD\", \"DMDY\", \"AGE\", \"TRTDURD\"]\n\n# ---------------------------------------------------------------------------\n# Provenance\n# ---------------------------------------------------------------------------\nPROVENANCE = {v: [\"ADSL.\" + v] for v in ADSL_VARS}\nPROVENANCE.update({\n    \"AESEQ\": [\"AE.AESEQ\"],\n    \"ASTDT\": [\"AE.AESTDTC\"],\n    \"ASTDTF\": [\"AE.AESTDTC\"],\n    \"AENDT\": [\"AE.AEENDTC\"],\n    \"AENDTF\": [\"AE.AEENDTC\"],\n    \"ASTDY\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\"],\n    \"AENDY\": [\"AE.AEENDTC\", \"ADSL.TRTSDT\"],\n    \"ADURN\": [\"AE.AESTDTC\", \"AE.AEENDTC\"],\n    \"TRTEMFL\": [\"AE.AESTDTC\", \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"AOCCIFL\": [\"AE.AESEV\", \"AE.AESTDTC\", \"AE.AESEQ\", \"AE.USUBJID\",\n                \"ADSL.TRTSDT\", \"ADSL.TRTEDT\"],\n    \"ASEV\": [\"AE.AESEV\"],\n    \"ASEVN\": [\"AE.AESEV\"],\n})\n\n# Final variable order (ADSL variables first, then AE analysis variables)\nOUT_VARS = ADSL_VARS + [\"AESEQ\", \"ASTDT\", \"ASTDTF\", \"AENDT\", \"AENDTF\",\n                        \"ASTDY\", \"AENDY\", \"ADURN\", \"TRTEMFL\", \"AOCCIFL\",\n                        \"ASEV\", \"ASEVN\"]\n\n# ASSUMPTION: Severity is collected using the standard MILD/MODERATE/SEVERE\n# scale; ASEVN is 1/2/3 respectively and missing when AESEV is not one of them.\n_SEV_MAP = {\"MILD\": 1.0, \"MODERATE\": 2.0, \"SEVERE\": 3.0}\n\n# ASSUMPTION: treatment-emergent period extends 30 days beyond the last dose.\n_END_WINDOW_DAYS = 30\n\n\n# ---------------------------------------------------------------------------\n# Helpers\n# ---------------------------------------------------------------------------\ndef _is_missing(v):\n    if v is None:\n        return True\n    try:\n        if isinstance(v, (float, np.floating)) and np.isnan(v):\n            return True\n    except Exception:\n        pass\n    try:\n        res = pd.isna(v)\n        if isinstance(res, bool):\n            return res\n    except Exception:\n        pass\n    return False\n\n\ndef _to_date(v):\n    \"\"\"Coerce a value coming from ADSL into a datetime.date (or None).\"\"\"\n    if _is_missing(v):\n        return None\n    if isinstance(v, pd.Timestamp):\n        return v.date()\n    if isinstance(v, dt.datetime):\n        return v.date()\n    if isinstance(v, dt.date):\n        return v\n    if isinstance(v, str):\n        s = v.strip()\n        if not s:\n            return None\n        try:\n            return pd.Timestamp(s).date()\n        except Exception:\n            return None\n    return None\n\n\ndef _to_str(v):\n    \"\"\"Coerce a value into a Python string ('' when missing).\"\"\"\n    if _is_missing(v):\n        return \"\"\n    if isinstance(v, str):\n        return v\n    return str(v)\n\n\ndef _last_day_of_month(year, month):\n    if month == 12:\n        return 31\n    return (dt.date(year, month + 1, 1) - dt.timedelta(days=1)).day\n\n\ndef _impute_dtc(dtc, start=True):\n    \"\"\"\n    Parse an ISO 8601 date/datetime string and impute missing components.\n\n    Returns (datetime.date or None, imputation flag).\n    Flag values follow ADaM conventions for the highest imputed component:\n      'D' - day imputed, 'M' - month (and day) imputed, '' - nothing imputed.\n    ASSUMPTION: start dates are imputed to the earliest possible date within\n    the known precision, end dates to the latest possible date; when the year\n    itself is unknown no imputation is performed (date left missing, flag '').\n    \"\"\"\n    if _is_missing(dtc):\n        return None, \"\"\n    s = str(dtc).strip()\n    if not s:\n        return None, \"\"\n    datepart = s.split(\"T\")[0]\n    if not datepart:\n        return None, \"\"\n    parts = datepart.split(\"-\")\n    y = parts[0]\n    if len(y) != 4 or not y.isdigit():\n        return None, \"\"\n    year = int(y)\n    mon = parts[1] if len(parts) > 1 and parts[1].isdigit() and len(parts[1]) == 2 else None\n    day = parts[2] if len(parts) > 2 and parts[2].isdigit() and len(parts[2]) == 2 else None\n\n    if mon is None:\n        flag = \"M\"\n        month = 1 if start else 12\n        dayn = 1 if start else _last_day_of_month(year, month)\n    elif day is None:\n        flag = \"D\"\n        month = int(mon)\n        dayn = 1 if start else _last_day_of_month(year, month)\n    else:\n        flag = \"\"\n        month = int(mon)\n        dayn = int(day)\n\n    try:\n        return dt.date(year, month, dayn), flag\n    except ValueError:\n        return None, \"\"\n\n\ndef _rel_day(adt, trtsdt):\n    \"\"\"ADaM relative study day (no day 0).\"\"\"\n    if adt is None or trtsdt is None:\n        return np.nan\n    delta = (adt - trtsdt).days\n    return float(delta + 1) if delta >= 0 else float(delta)\n\n\n# ---------------------------------------------------------------------------\n# Main derivation\n# ---------------------------------------------------------------------------\ndef derive(sources):\n    ae = sources[\"AE\"].copy()\n    adsl = sources[\"ADSL\"].copy()\n\n    # ---------------- prepare ADSL (one record per subject) ----------------\n    adsl = adsl[ADSL_VARS].copy()\n    # ASSUMPTION: ADSL is already one record per subject; guard against\n    # duplicates so the merge cannot fan out AE records.\n    adsl = adsl.drop_duplicates(subset=[\"USUBJID\"], keep=\"first\")\n\n    for c in ADSL_DATE_VARS:\n        adsl[c] = [_to_date(v) for v in adsl[c]]\n    for c in ADSL_DTM_VARS:\n        adsl[c] = pd.to_datetime(adsl[c], errors=\"coerce\")\n    for c in ADSL_NUM_VARS:\n        adsl[c] = pd.to_numeric(adsl[c], errors=\"coerce\")\n    char_adsl = [c for c in ADSL_VARS\n                 if c not in ADSL_DATE_VARS + ADSL_DTM_VARS + ADSL_NUM_VARS]\n    for c in char_adsl:\n        adsl[c] = [_to_str(v) for v in adsl[c]]\n\n    # ---------------- AE side ----------------\n    ae = ae[[\"USUBJID\", \"AESEQ\", \"AESTDTC\", \"AEENDTC\", \"AESEV\"]].copy()\n    ae[\"USUBJID\"] = [_to_str(v) for v in ae[\"USUBJID\"]]\n    ae[\"AESEQ\"] = pd.to_numeric(ae[\"AESEQ\"], errors=\"coerce\")\n\n    # Merge ADSL onto every AE record (left join keeps all AE records)\n    adae = ae.merge(adsl, on=\"USUBJID\", how=\"left\")\n\n    # ---------------- analysis dates and imputation flags ----------------\n    st = [_impute_dtc(v, start=True) for v in adae[\"AESTDTC\"]]\n    en = [_impute_dtc(v, start=False) for v in adae[\"AEENDTC\"]]\n    adae[\"ASTDT\"] = [x[0] for x in st]\n    adae[\"ASTDTF\"] = [x[1] for x in st]\n    adae[\"AENDT\"] = [x[0] for x in en]\n    adae[\"AENDTF\"] = [x[1] for x in en]\n\n    # ---------------- relative days and duration ----------------\n    trtsdt = list(adae[\"TRTSDT\"])\n    trtedt = list(adae[\"TRTEDT\"])\n    astdt = list(adae[\"ASTDT\"])\n    aendt = list(adae[\"AENDT\"])\n\n    adae[\"ASTDY\"] = [_rel_day(a, t) for a, t in zip(astdt, trtsdt)]\n    adae[\"AENDY\"] = [_rel_day(a, t) for a, t in zip(aendt, trtsdt)]\n    adae[\"ADURN\"] = [float((e - s).days + 1) if (s is not None and e is not None\n                                                 and e >= s) else np.nan\n                     for s, e in zip(astdt, aendt)]\n\n    # ---------------- treatment emergent flag ----------------\n    # ASSUMPTION: an event is treatment emergent when its analysis start date\n    # is on or after the first dose date and no later than 30 days after the\n    # last dose date. Events with a missing analysis start date or with no\n    # treatment start date are not flagged.\n    temfl = []\n    for s, t0, t1 in zip(astdt, trtsdt, trtedt):\n        if s is None or t0 is None:\n            temfl.append(\"\")\n        elif s >= t0 and (t1 is None\n                          or s <= t1 + dt.timedelta(days=_END_WINDOW_DAYS)):\n            temfl.append(\"Y\")\n        else:\n            temfl.append(\"\")\n    adae[\"TRTEMFL\"] = temfl\n\n    # ---------------- severity ----------------\n    adae[\"ASEV\"] = [_to_str(v).strip() for v in adae[\"AESEV\"]]\n    adae[\"ASEVN\"] = [_SEV_MAP.get(v.upper(), np.nan) for v in adae[\"ASEV\"]]\n\n    # ---------------- first maximum severity occurrence flag ----------------\n    # Among treatment-emergent records only: highest ASEVN, then earliest\n    # analysis start date, then lowest AESEQ, one record per subject.\n    adae[\"_astdt_key\"] = pd.to_datetime(pd.Series(adae[\"ASTDT\"]).astype(\"object\"),\n                                        errors=\"coerce\")\n    adae[\"AOCCIFL\"] = \"\"\n    te = adae[adae[\"TRTEMFL\"] == \"Y\"]\n    if len(te) > 0:\n        te_sorted = te.sort_values(\n            by=[\"USUBJID\", \"ASEVN\", \"_astdt_key\", \"AESEQ\"],\n            ascending=[True, False, True, True],\n            na_position=\"last\",\n            kind=\"mergesort\",\n        )\n        first_idx = te_sorted.groupby(\"USUBJID\", sort=False).head(1).index\n        adae.loc[first_idx, \"AOCCIFL\"] = \"Y\"\n\n    # ---------------- finalise ----------------\n    adae = adae.sort_values(by=[\"USUBJID\", \"AESEQ\"], kind=\"mergesort\")\n    adae = adae.reset_index(drop=True)\n    adae = adae[OUT_VARS]\n\n    # enforce output types\n    for c in [\"ASTDT\", \"AENDT\"]:\n        adae[c] = [_to_date(v) for v in adae[c]]\n    for c in [\"ASTDTF\", \"AENDTF\", \"TRTEMFL\", \"AOCCIFL\", \"ASEV\"]:\n        adae[c] = [_to_str(v) for v in adae[c]]\n    for c in [\"AESEQ\", \"ASTDY\", \"AENDY\", \"ADURN\", \"ASEVN\"]:\n        adae[c] = pd.to_numeric(adae[c], errors=\"coerce\")\n\n    return adae",
+        "findings": [],
+        "usage": {
+          "input_tokens": 11272,
+          "output_tokens": 7548,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  }
+]

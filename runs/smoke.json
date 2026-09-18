@@ -1,0 +1,412 @@
+[
+  {
+    "dataset": "ADSL",
+    "level": "L1",
+    "repeat": 0,
+    "model": "claude-opus-5",
+    "score": 0.6,
+    "n_attempts": 2,
+    "target_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "TRTSDT",
+      "TRTEDT",
+      "TRTDURD",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1",
+      "EOSSTT"
+    ],
+    "clean_variables": [
+      "USUBJID",
+      "TRT01P",
+      "TRT01A",
+      "SAFFL",
+      "AGEGR1",
+      "RACEGR1"
+    ],
+    "provenance": {
+      "USUBJID": [
+        "DM.USUBJID"
+      ],
+      "TRT01P": [
+        "DM.ARM"
+      ],
+      "TRT01A": [
+        "DM.ACTARM"
+      ],
+      "TRTSDT": [
+        "EX.USUBJID",
+        "EX.EXSTDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTEDT": [
+        "EX.USUBJID",
+        "EX.EXENDTC",
+        "EX.EXDOSE",
+        "EX.EXTRT"
+      ],
+      "TRTDURD": [
+        "ADSL.TRTSDT",
+        "ADSL.TRTEDT"
+      ],
+      "SAFFL": [
+        "ADSL.TRTSDT"
+      ],
+      "AGEGR1": [
+        "DM.AGE"
+      ],
+      "RACEGR1": [
+        "DM.RACE"
+      ],
+      "EOSSTT": [
+        "DS.USUBJID",
+        "DS.DSCAT",
+        "DS.DSDECOD"
+      ]
+    },
+    "cost_usd": 0.2706,
+    "attempts": [
+      {
+        "n": 1,
+        "executed": true,
+        "findings": [
+          {
+            "code": "MISSING_COUNT",
+            "layer": "CALIBRATED",
+            "variable": "TRTEDT",
+            "message": "expected 54 missing values, got 52",
+            "n_rows": 2,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "CT_VIOLATION",
+            "layer": "STRUCTURAL",
+            "variable": "RACEGR1",
+            "message": "values outside controlled terminology: [\"'Non-White'\"]",
+            "n_rows": 33,
+            "examples": [
+              "Non-White"
+            ],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "RACEGR1",
+            "message": "value distribution differs: expected {'White': 273, 'Non-white': 33}, got {'White': 273, 'Non-White': 33}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "EOSSTT",
+            "message": "value distribution differs: expected {'DISCONTINUED': 144, 'COMPLETED': 110, '': 52}, got {'DISCONTINUED': 196, 'COMPLETED': 110}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEDT",
+            "message": "2 of 306 values differ from ground truth",
+            "n_rows": 2,
+            "examples": [
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "2013-07-05"
+              },
+              {
+                "key": "01-705-1382",
+                "expected": "nan",
+                "got": "2013-05-13"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTDURD",
+            "message": "2 of 306 values differ from ground truth",
+            "n_rows": 2,
+            "examples": [
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "1.0"
+              },
+              {
+                "key": "01-705-1382",
+                "expected": "nan",
+                "got": "1.0"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "RACEGR1",
+            "message": "33 of 306 values differ from ground truth",
+            "n_rows": 33,
+            "examples": [
+              {
+                "key": "01-701-1176",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1203",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1275",
+                "expected": "Non-white",
+                "got": "Non-White"
+              },
+              {
+                "key": "01-701-1363",
+                "expected": "Non-white",
+                "got": "Non-White"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "DISCONTINUED"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "PROVENANCE_MISMATCH",
+            "layer": "PROVENANCE",
+            "variable": "TRTSDT",
+            "message": "declared ['EX.EXDOSE', 'EX.EXSTDTC', 'EX.EXTRT', 'EX.USUBJID'], spec says ['EX.EXSTDTC']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "PROVENANCE_MISMATCH",
+            "layer": "PROVENANCE",
+            "variable": "TRTEDT",
+            "message": "declared ['EX.EXDOSE', 'EX.EXENDTC', 'EX.EXTRT', 'EX.USUBJID'], spec says ['EX.EXENDTC']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "PROVENANCE_MISMATCH",
+            "layer": "PROVENANCE",
+            "variable": "EOSSTT",
+            "message": "declared ['DS.DSCAT', 'DS.DSDECOD', 'DS.USUBJID'], spec says ['DS.DSCAT', 'DS.DSDECOD']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          }
+        ],
+        "usage": {
+          "input_tokens": 959,
+          "output_tokens": 4424,
+          "cache_read": 0,
+          "cache_write": 7037
+        }
+      },
+      {
+        "n": 2,
+        "executed": true,
+        "findings": [
+          {
+            "code": "MISSING_COUNT",
+            "layer": "CALIBRATED",
+            "variable": "TRTEDT",
+            "message": "expected 54 missing values, got 52",
+            "n_rows": 2,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "VALUE_COUNTS",
+            "layer": "CALIBRATED",
+            "variable": "EOSSTT",
+            "message": "value distribution differs: expected {'DISCONTINUED': 144, 'COMPLETED': 110, '': 52}, got {'DISCONTINUED': 196, 'COMPLETED': 110}",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTEDT",
+            "message": "2 of 306 values differ from ground truth",
+            "n_rows": 2,
+            "examples": [
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "2013-07-05"
+              },
+              {
+                "key": "01-705-1382",
+                "expected": "nan",
+                "got": "2013-05-13"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "TRTDURD",
+            "message": "2 of 306 values differ from ground truth",
+            "n_rows": 2,
+            "examples": [
+              {
+                "key": "01-705-1018",
+                "expected": "nan",
+                "got": "1.0"
+              },
+              {
+                "key": "01-705-1382",
+                "expected": "nan",
+                "got": "1.0"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "TRUTH_DIFF",
+            "layer": "TRUTH",
+            "variable": "EOSSTT",
+            "message": "52 of 306 values differ from ground truth",
+            "n_rows": 52,
+            "examples": [
+              {
+                "key": "01-701-1057",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1145",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1162",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1176",
+                "expected": "",
+                "got": "DISCONTINUED"
+              },
+              {
+                "key": "01-701-1240",
+                "expected": "",
+                "got": "DISCONTINUED"
+              }
+            ],
+            "silent": true,
+            "needs_answer_key": true
+          },
+          {
+            "code": "PROVENANCE_MISMATCH",
+            "layer": "PROVENANCE",
+            "variable": "TRTSDT",
+            "message": "declared ['EX.EXDOSE', 'EX.EXSTDTC', 'EX.EXTRT', 'EX.USUBJID'], spec says ['EX.EXSTDTC']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "PROVENANCE_MISMATCH",
+            "layer": "PROVENANCE",
+            "variable": "TRTEDT",
+            "message": "declared ['EX.EXDOSE', 'EX.EXENDTC', 'EX.EXTRT', 'EX.USUBJID'], spec says ['EX.EXENDTC']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          },
+          {
+            "code": "PROVENANCE_MISMATCH",
+            "layer": "PROVENANCE",
+            "variable": "EOSSTT",
+            "message": "declared ['DS.DSCAT', 'DS.DSDECOD', 'DS.USUBJID'], spec says ['DS.DSCAT', 'DS.DSDECOD']",
+            "n_rows": 0,
+            "examples": [],
+            "silent": false,
+            "needs_answer_key": false
+          }
+        ],
+        "usage": {
+          "input_tokens": 4431,
+          "output_tokens": 3422,
+          "cache_read": 7037,
+          "cache_write": 0
+        }
+      }
+    ]
+  }
+]
